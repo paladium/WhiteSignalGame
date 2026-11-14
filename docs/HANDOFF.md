@@ -20,8 +20,15 @@ Vite serves the game at http://localhost:5173/WhiteSignalGame/. Production deplo
 
 ## Verification and known limits
 
+- Translations: story data stays in English and English strings are the keys of [ru.ts](../src/i18n/ru.ts). After adding or changing text, run `npm run strings`; `npm test` fails if a story string has no Russian line. Interface text goes through `t()`/`tf()` in code or `data-i18n` in [ui.ts](../src/ui.ts).
+- Input is action based ([settings.ts](../src/systems/settings.ts)): use `input.pressed('interact')`, not key codes. Touch buttons use `data-control="<action>"`; the gamepad maps to the same actions.
+- Saves now also store `splits`, `cycle` (New Game+) and `coda` (the Chapter 06 choice). All are optional and validated on load.
+- `npm run pacing` walks the objective route on the collision grid and prints an estimated time per chapter.
+- In `npm run dev`, `window.whiteSignal` exposes `state`, `go(area, x, z)`, `grant(...milestones)`, `close()`, `field` and `tick(frames)`; press ` for the collision overlay. It is stripped from production builds. [browser-check.js](../scripts/browser-check.js) uses it to play both endings and collect all evidence with real key events. [browser-suite.js](../scripts/browser-suite.js) runs 44 checks of movement, menus and shortcuts, field hazards, saves, gamepad (emulated), touch, key remapping, live language switching, the last-call choice and New Game+: `await import('/WhiteSignalGame/scripts/browser-suite.js'); await whiteSignalSuite()`.
+
 - The tests cover movement, grounded thin ice, exposure and beacon recovery, migration of the original radio checkpoint, objective prerequisites through the ending choice, and collision-aware reachability of prompts and portals.
 - Browser smoke checks covered loading an earlier checkpoint, the radio room, the map, the station yard, the crew quarters, and locker puzzle feedback. Full timed playthroughs of both endings and a comprehensive mobile/audio pass remain the next verification tasks.
+- Chapter 06 (Halvard coast station) unlocks after either ending via the `coast-road` portal in the crevasse. Coast hotspots use `afterEnding` in [story.ts](../src/world/story.ts); the operator’s log has one variant per ending. Field hazards, heaters, and thin ice are keyed by `FieldArea` in [expedition-layout.ts](../src/world/expedition-layout.ts). Completing `caller` plays `coastEpilogue` and stops the active-time clock. Checkpoints saved after an ending continue into the chapter.
 - The expedition is playable through two endings. Its 30-minute goal is a pacing estimate, and the figure behavior, environmental art, and synthesized footsteps are ready for tuning. Vite emits its existing bundle size advisory for the Three.js build.
 
 See [ASSETS.md](ASSETS.md) for code-generated assets and committed screenshots.

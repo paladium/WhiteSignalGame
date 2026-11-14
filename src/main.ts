@@ -9,14 +9,24 @@ import { move, type GroundPoint } from './systems/movement';
 import { loadSave, saveGame, freshSave } from './systems/save';
 import { Levels } from './world/levels';
 import { walkAreas } from './world/layout';
-import { expedition, expeditionAreas, type Area } from './world/expedition-layout';
-import { available, chapter, currentObjective, endings, has, hotspots, routeTarget, type Hotspot, type Line } from './world/story';
+import { expedition, expeditionAreas, isFieldArea, type Area } from './world/expedition-layout';
+import { available, chapter, coastEpilogue, codaOptions, codaTitles, currentObjective, endings, has, hotspots, matchesEnding, routeTarget, type Hotspot, type Line } from './world/story';
 import { archive, type Ending } from './systems/progress';
 import { FieldConditions } from './systems/field';
 import { Encounter } from './systems/encounter';
+import { pictogram } from './world/pictograms';
+import { SceneEffects } from './world/effects';
+import { setLanguage, t, tf } from './i18n';
+import { actions, keyName, loadSettings, saveSettings, type Action } from './systems/settings';
+import { Achievements, achievementList, type AchievementId } from './systems/achievements';
+import type { PadCommand } from './systems/input';
+import { Voice } from './systems/voice';
 
 createUI();
 const state=loadSave();
+const settings = loadSettings();
+const achievements = new Achievements();
+const voice = new Voice();
 let renderer: THREE.WebGLRenderer;
 try { renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'}); }
 catch { el('viewport').innerHTML='<p style="padding:30vh 10%;position:relative;z-index:20">The White Signal needs WebGL. Please enable hardware acceleration and reload in a supported browser.</p>'; throw new Error('WebGL unavailable'); }
@@ -26,65 +36,12 @@ el('viewport').append(renderer.domElement);
 renderer.domElement.setAttribute('aria-label','Snow-covered Kestrel Station. Use WASD or the arrow keys to move. Press E to interact.');
 const scene=new THREE.Scene();scene.background=new THREE.Color('#152b3b');scene.fog=new THREE.FogExp2('#243f50', .009);
 const levels=new Levels(scene), player=new Character(scene), camera=new FollowCamera(), input=new Input(), audio=new AudioSystem();
-const flashlight = new THREE.SpotLight('#e7e5bc', 19, 12, .33, .75, 1.4);
-scene.add(flashlight, flashlight.target);
-
-const cone = new THREE.Shape();
-cone.moveTo(0, 0);
-cone.lineTo(5.5, 1.15);
-cone.quadraticCurveTo(6.1, 0, 5.5, -1.15);
-cone.closePath();
-const beamGeometry = new THREE.ShapeGeometry(cone);
-const positions = beamGeometry.getAttribute('position');
-const falloff = new Float32Array(positions.count);
-for (let i = 0; i < positions.count; i++) falloff[i] = 1 - positions.getX(i) / 6;
-beamGeometry.setAttribute('strength', new THREE.BufferAttribute(falloff, 1));
-beamGeometry.rotateX(-Math.PI / 2);
-const beam = new THREE.Mesh(beamGeometry, new THREE.ShaderMaterial({
-  vertexShader: `
-    attribute float strength;
-    varying float lightStrength;
-    void main() {
-      lightStrength = strength;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: `
-    varying float lightStrength;
-    void main() {
-      gl_FragColor = vec4(0.77, 0.76, 0.55, max(lightStrength, 0.0) * 0.16);
-    }
-  `,
-  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-}));
-scene.add(beam);
-
-const waypoint = new THREE.Group();
-const halo = new THREE.Mesh(
-  new THREE.RingGeometry(0.63, 0.69, 28),
-  new THREE.MeshBasicMaterial({ color: '#f2b275', transparent: true, opacity: 0.8 }),
-);
-halo.rotation.x = -Math.PI / 2;
-const diamond = new THREE.Mesh(
-  new THREE.OctahedronGeometry(0.19),
-  new THREE.MeshBasicMaterial({ color: '#ffd1a1' }),
-);
-waypoint.add(halo, diamond);
-scene.add(waypoint);
-
+const effects = new SceneEffects(scene);
 const field = new FieldConditions();
 const encounter = new Encounter();
-const figure = new THREE.Group();
 const arrow = el('objectiveArrow');
-const figureMaterial = new THREE.MeshBasicMaterial({ color: '#152329', transparent: true, opacity: .72 });
-const coat = new THREE.Mesh(new THREE.CylinderGeometry(.24, .43, 1.34, 6), figureMaterial);
-coat.position.y = .82;
-const head = new THREE.Mesh(new THREE.SphereGeometry(.24, 8, 6), figureMaterial);
-head.position.y = 1.66;
-figure.add(coat, head);
-scene.add(figure);
 
-type Panel = 'pause' | 'journal' | 'map' | 'ending';
+type Panel = 'menu' | 'pause' | 'journal' | 'map' | 'ending' | 'settings' | 'achievements';
 let panel: Panel | undefined;
 let dialogue: { lines: Line[]; index: number; tag: string; finish?: () => void } | undefined;
 let nearby: Hotspot | undefined;
@@ -97,10 +54,22 @@ let clock = 0;
 let stepDistance = 0;
 let wasCracking = false;
 let lastFieldStatus = '';
+let heartbeat = 0;
+let captionTimer = 0;
+let titleTimer = 0;
+let idleTimer = 0;
+let lastChapter = '';
+let settingsReturn: Panel = 'pause';
+let rebinding: Action | undefined;
+let wasTracking = false;
+let wasStorm = false;
+// Set once the caller is verified, so stepping back from the last choice doesn't repeat the puzzle.
+let callerVerified = false;
+const visited = new Set<Area>();
 
-const snowy = (area: Area) => area === 'outside' || area === 'ridge' || area === 'crevasse';
-const exposed = (area: Area) => area === 'ridge' || area === 'crevasse';
-const placeName = (area: Area) => area === 'outside' ? 'Station yard' : area === 'inside' ? 'Radio room' : expedition[area].title;
+const snowy = (area: Area) => area === 'outside' || isFieldArea(area);
+const exposed = isFieldArea;
+const placeName = (area: Area) => t(area === 'outside' ? 'Station yard' : area === 'inside' ? 'Radio room' : expedition[area].title);
 
 function formatTime(seconds: number) {
   const whole = Math.floor(seconds);
@@ -108,15 +77,74 @@ function formatTime(seconds: number) {
 }
 
 function toast(message: string) {
-  el('toast').textContent = message;
+  el('toast').textContent = t(message);
   el('toast').style.opacity = '1';
   toastTimer = 5;
+}
+
+/** Text for sounds, so the game reads the same with audio off. */
+function caption(text: string, seconds = 3.2) {
+  if (!settings.captions) return;
+  el('caption').textContent = `[${t(text)}]`;
+  el('caption').classList.add('show');
+  captionTimer = seconds;
+}
+
+function award(id: AchievementId) {
+  if (!achievements.unlock(id)) return;
+  audio.beep(880);
+  setTimeout(() => toast(tf('Achievement · {0}', t(achievementList[id].title))), 900);
+}
+
+const areaSounds: Partial<Record<Area, string>> = {
+  inside: 'Radio static hisses under the hum of the racks',
+  annex: 'Generators drone behind the wall',
+  ridge: 'Wind howls across the ridge',
+  crevasse: 'Ice creaks somewhere below',
+  borehole: 'A slow pulse rises from the shaft',
+  coast: 'Waves break against the sea ice',
+  hut: 'A radio set hums, tuned to an empty channel',
+};
+
+const barks: Partial<Record<Area, string>> = {
+  quarters: 'VOSS — Six bunks. Somebody kept making the seventh.',
+  annex: 'VOSS — It smells of burnt insulation and coffee.',
+  ridge: 'VOSS — Three towers. Three bearings. Keep the light low out here.',
+  crevasse: 'VOSS — The trench swallows sound. Not footsteps, though.',
+  borehole: 'VOSS — It’s warm down here. It shouldn’t be.',
+  coast: 'VOSS — The coast was supposed to be safe.',
+  hut: 'VOSS — Her coffee is still warm. So is the radio.',
+};
+
+function applySettings() {
+  input.bindings = settings.keys;
+  field.difficulty = settings.difficulty;
+  audio.setVolume(settings.volume);
+  voice.enabled = settings.voice;
+  voice.volume = settings.volume;
+  document.documentElement.style.setProperty('--text-scale', String(settings.textScale));
+  document.documentElement.lang = settings.language;
+  el('caption').classList.toggle('hidden-ui', !settings.captions);
+  setLanguage(settings.language);
+  document.title = settings.language === 'ru' ? 'Белый сигнал' : 'The White Signal';
+  document.querySelectorAll<HTMLElement>('[data-i18n]').forEach(item => { item.textContent = t(item.dataset.i18n!); });
+  document.querySelectorAll<HTMLElement>('[data-key]').forEach(item => { item.textContent = keyName(settings.keys[item.dataset.key as Action]); });
+}
+
+/** Re-applies every dynamic label, for example after the language changes. */
+function refreshTexts() {
+  areaLabels(state.level);
+  updateObjective();
+  updatePrompt();
+  updateFieldHud();
+  showSoundStatus();
+  persist();
 }
 
 function persist() {
   state.x = player.body.x;
   state.z = player.body.z;
-  el('saveLabel').textContent = saveGame(state) ? 'PROGRESS SAVED AUTOMATICALLY' : 'LOCAL STORAGE UNAVAILABLE';
+  el('saveLabel').textContent = t(saveGame(state) ? 'PROGRESS SAVED AUTOMATICALLY' : 'LOCAL STORAGE UNAVAILABLE');
 }
 
 function placePlayer(point: GroundPoint) {
@@ -132,19 +160,38 @@ function updateObjective() {
   const objective = currentObjective(state);
   navigation = routeTarget(state, objective.target);
   el('objectiveText').textContent = state.level === 'outside' && !has(state, 'heard')
-    ? 'Reach the station and listen to the radio' : objective.text;
+    ? t('Reach the station and listen to the radio') : tf(objective.text, ...objective.values ?? []);
   el('objectiveRoute').textContent = navigation && navigation.id !== objective.target
-    ? navigation.label : '';
+    ? t(navigation.label) : '';
   const current = chapter(state);
-  el('chapterText').textContent = `CHAPTER ${current.number} / ${current.title}`;
-  el('flashState').textContent = `◉ FLASHLIGHT ${state.flashlight ? 'ON' : 'OFF'}`;
-  el('evidenceCount').textContent = `EVIDENCE ${state.evidence.length}/${Object.keys(archive).length}`;
+  el('chapterText').textContent = tf('CHAPTER {0} / {1}', current.number, t(current.title));
+  if (current.number !== lastChapter) {
+    if (!(current.number in state.splits)) state.splits[current.number] = state.elapsed;
+    if (lastChapter) showTitleCard(current.number, current.title);
+    lastChapter = current.number;
+  }
+  el('flashState').textContent = tf('◉ FLASHLIGHT {0}', t(state.flashlight ? 'ON' : 'OFF'));
+  el('evidenceCount').textContent = tf('EVIDENCE {0}/{1}', state.evidence.length, Object.keys(archive).length);
   const entries = 1 + state.progress.length + state.evidence.length;
   el('journalButton').querySelector('.unread')!.textContent = String(entries);
-  el('journalButton').setAttribute('aria-label', `Field notes, ${entries} entries`);
+  el('journalButton').setAttribute('aria-label', tf('Field notes, {0} entries', entries));
+}
+
+function showTitleCard(number: string, title: string) {
+  el('titleCardNumber').textContent = tf('CHAPTER {0}', number);
+  el('titleCardTitle').textContent = t(title);
+  el('titleCard').classList.add('show');
+  titleTimer = 3.4;
+}
+
+function areaLabels(area: Area) {
+  el('locationTitle').textContent = (area === 'outside' ? t('Kestrel Station') : placeName(area)).toUpperCase();
+  el('sceneLabel').textContent = t(area === 'outside' ? 'EXTERIOR · STATION YARD'
+    : area === 'inside' ? 'INTERIOR · RADIO ROOM' : expedition[area].subtitle);
 }
 
 function changeArea(area: Area, point: GroundPoint, announce = true) {
+  if (state.level === 'crevasse' && area === 'borehole' && !field.tracked) award('ghost');
   state.level = area;
   const outdoors = snowy(area);
   levels.setLevel(area);
@@ -152,13 +199,13 @@ function changeArea(area: Area, point: GroundPoint, announce = true) {
   wasCracking = false;
   lastFieldStatus = '';
   audio.surface(outdoors);
+  audio.ambience(area === 'outside' ? 'yard' : area === 'inside' ? 'radio' : area);
   scene.background = new THREE.Color(outdoors ? '#152b3b' : '#101c25');
   scene.fog = new THREE.FogExp2(outdoors ? '#243f50' : '#15232b', exposed(area) ? .012 : outdoors ? .009 : .0045);
-  el('locationTitle').textContent = (area === 'outside' ? 'Kestrel Station' : placeName(area)).toUpperCase();
-  el('sceneLabel').textContent = area === 'outside' ? 'EXTERIOR · STATION YARD'
-    : area === 'inside' ? 'INTERIOR · RADIO ROOM' : expedition[area].subtitle;
+  areaLabels(area);
   el('worldCaption').hidden = area !== 'outside';
   el('fieldMeters').hidden = !exposed(area);
+  el('battery').parentElement!.hidden = settings.difficulty === 'story';
   el('game').classList.toggle('indoors', !outdoors);
   nearby = undefined;
   placePlayer(point);
@@ -170,19 +217,24 @@ function changeArea(area: Area, point: GroundPoint, announce = true) {
     persist();
     audio.beep(330);
     toast(placeName(area));
+    const sound = areaSounds[area];
+    if (sound) caption(sound);
+    const bark = barks[area];
+    if (bark && !visited.has(area)) setTimeout(() => { if (state.level === area && !dialogue) toast(bark); }, 2600);
   }
+  visited.add(area);
 }
 
 function addParagraph(content: HTMLElement, text: string, className = '') {
   const p = document.createElement('p');
-  p.textContent = text;
+  p.textContent = t(text);
   p.className = className;
   content.append(p);
 }
 
 function addHeading(content: HTMLElement, text: string) {
   const heading = document.createElement('h3');
-  heading.textContent = text;
+  heading.textContent = t(text);
   content.append(heading);
 }
 
@@ -194,37 +246,130 @@ function setPanel(next?: Panel) {
   panel = next;
   input.clear();
   el('overlay').hidden = !next;
-  el('pauseButton').setAttribute('aria-label', next ? 'Resume game' : 'Pause game');
+  el('pauseButton').setAttribute('aria-label', t(next ? 'Resume game' : 'Pause game'));
   updatePrompt();
-  audio.pause(document.hidden || next === 'pause' || next === 'journal' || next === 'map');
+  audio.pause(document.hidden || Boolean(next && next !== 'ending'));
+  if (next && next !== 'ending') voice.stop();
   if (!next) {
     last = performance.now();
     (document.activeElement as HTMLElement | null)?.blur();
     return;
   }
 
-  el('panelTitle').textContent = { pause: 'Expedition paused', journal: 'Field notes', map: 'Expedition map', ending: 'Expedition complete' }[next];
+  el('panelTitle').textContent = t({
+    menu: 'The White Signal', pause: 'Expedition paused', journal: 'Field notes', map: 'Expedition map',
+    ending: 'Expedition complete', settings: 'Settings', achievements: 'Achievements',
+  }[next]);
   const content = el('panelContent');
+  const actionsBox = el('panelActions');
   content.replaceChildren();
-  if (next === 'pause') {
-    addParagraph(content, 'WASD or arrows to move · Shift to run · Space to jump · F for flashlight · E to interact');
-    addParagraph(content, 'J opens Field Notes. M shows the route to your objective. Use the sound button to mute or restore footsteps and signal tones.');
+  actionsBox.replaceChildren();
+  const fixedButtons = next !== 'menu' && next !== 'settings' && next !== 'achievements';
+  el('resumeButton').classList.toggle('hidden-ui', !fixedButtons);
+  el('restartButton').classList.toggle('hidden-ui', next !== 'pause');
+  const action = (label: string, run: () => void) => {
+    const button = document.createElement('button');
+    button.textContent = t(label);
+    button.addEventListener('click', run);
+    actionsBox.append(button);
+    return button;
+  };
+  const k = (name: Action) => keyName(settings.keys[name]);
+  if (next === 'menu') {
+    addParagraph(content, 'Antarctica, August 17, 1987. Kestrel Station stopped answering at 03:14 UTC.');
+    if (state.cycle) addParagraph(content, tf('Cycle {0}. Some of this will feel familiar.', state.cycle + 1), 'map-route');
+    const started = state.elapsed > 0 || state.progress.length > 0;
+    if (started) action(tf('CONTINUE · {0} · CHAPTER {1}', formatTime(state.elapsed), chapter(state).number), () => setPanel());
+    action(started ? 'NEW EXPEDITION' : 'BEGIN EXPEDITION', () => {
+      if (started && !window.confirm(t('Start over and clear this checkpoint?'))) return;
+      startExpedition(0);
+    });
+    if (has(state, 'caller')) action('NEW CYCLE · KEEP YOUR MEMORIES', () => startExpedition(state.cycle + 1));
+    action('SETTINGS', () => { settingsReturn = 'menu'; setPanel('settings'); });
+    action('ACHIEVEMENTS', () => { settingsReturn = 'menu'; setPanel('achievements'); });
+  } else if (next === 'settings') {
+    const row = (label: string, control: HTMLElement) => {
+      const line = document.createElement('label');
+      line.className = 'settings-row';
+      line.append(t(label), control);
+      content.append(line);
+    };
+    const toggle = (label: string, value: () => string, change: () => void) => {
+      const button = document.createElement('button');
+      button.textContent = t(value());
+      button.addEventListener('click', () => {
+        const languageBefore = settings.language;
+        change();
+        saveSettings(settings);
+        applySettings();
+        if (settings.language !== languageBefore) { refreshTexts(); setPanel('settings'); return; }
+        button.textContent = t(value());
+      });
+      row(label, button);
+      return button;
+    };
+    const volume = document.createElement('input');
+    volume.type = 'range';
+    volume.min = '0'; volume.max = '1'; volume.step = '.05';
+    volume.value = String(settings.volume);
+    volume.addEventListener('input', () => { settings.volume = Number(volume.value); saveSettings(settings); applySettings(); });
+    row('Volume', volume);
+    toggle('Text size', () => `${Math.round(settings.textScale * 100)}%`, () => {
+      settings.textScale = settings.textScale === 1 ? 1.15 : settings.textScale === 1.15 ? 1.3 : 1;
+    });
+    toggle('Sound captions', () => settings.captions ? 'ON' : 'OFF', () => { settings.captions = !settings.captions; });
+    if (voice.available) toggle('Voice-over', () => settings.voice ? 'ON' : 'OFF', () => { settings.voice = !settings.voice; if (!settings.voice) voice.stop(); });
+    toggle('Difficulty', () => ({ story: 'STORY · no capture, mild cold', normal: 'NORMAL', hard: 'HARD · colder, sharper ears' })[settings.difficulty], () => {
+      settings.difficulty = settings.difficulty === 'normal' ? 'hard' : settings.difficulty === 'hard' ? 'story' : 'normal';
+    });
+    toggle('Language', () => settings.language === 'ru' ? 'РУССКИЙ' : 'ENGLISH', () => {
+      settings.language = settings.language === 'en' ? 'ru' : 'en';
+    });
+    addHeading(content, 'Keys · click, then press a key');
+    for (const name of actions) {
+      const button = toggle(name.toUpperCase(), () => rebinding === name ? 'PRESS A KEY…' : k(name), () => { rebinding = name; });
+      button.dataset.action = name;
+    }
+    addParagraph(content, 'Arrow keys and Enter always work. Gamepad: stick or D-pad to move, A interact, B jump, X flashlight, Y field notes, shoulder buttons run, Back map, Start pause.');
+    action('BACK', () => setPanel(settingsReturn));
+  } else if (next === 'achievements') {
+    for (const [id, entry] of Object.entries(achievementList)) {
+      const p = document.createElement('p');
+      p.className = `achievement${achievements.earned.has(id as AchievementId) ? ' earned' : ''}`;
+      const title = document.createElement('strong');
+      title.textContent = `${achievements.earned.has(id as AchievementId) ? '◆' : '◇'} ${t(entry.title)}`;
+      p.append(title, ` — ${t(entry.text)}`);
+      content.append(p);
+    }
+    action('BACK', () => setPanel(settingsReturn));
+  } else if (next === 'pause') {
+    addParagraph(content, tf('{0}{1}{2}{3} or arrows to move · {4} to run · {5} to jump · {6} for flashlight · {7} to interact',
+      k('up'), k('left'), k('down'), k('right'), k('run'), k('jump'), k('flashlight'), k('interact')));
+    addParagraph(content, tf('{0} opens Field Notes. {1} shows the route to your objective. Use the sound button to mute or restore footsteps and signal tones.', k('journal'), k('map')));
+    addSplits(content);
+    action('SETTINGS', () => { settingsReturn = 'pause'; setPanel('settings'); });
+    action('ACHIEVEMENTS', () => { settingsReturn = 'pause'; setPanel('achievements'); });
+    action('MAIN MENU', () => setPanel('menu'));
   } else if (next === 'journal') {
     addHeading(content, 'August 17, 1987');
-    addParagraph(content, 'Kestrel stopped answering at 03:14. No distress call. Just twelve seconds of white noise.');
+    addParagraph(content, state.cycle
+      ? 'Kestrel stopped answering at 03:14. Again. The handwriting in these notes is already mine.'
+      : 'Kestrel stopped answering at 03:14. No distress call. Just twelve seconds of white noise.');
     for (const spot of [...hotspots].reverse()) {
-      if (!spot.proof || !has(state, spot.proof)) continue;
+      if (!spot.proof || !has(state, spot.proof) || !matchesEnding(state, spot)) continue;
       addHeading(content, spot.label);
-      for (const [speaker, line] of spot.lines ?? []) addParagraph(content, `${speaker} — ${line}`);
+      for (const [speaker, line] of spot.lines ?? []) addParagraph(content, `${t(speaker)} — ${t(line)}`);
     }
     for (const id of state.evidence) {
       addHeading(content, archive[id].title);
+      content.lastElementChild!.prepend(pictogram(id));
       addParagraph(content, archive[id].text);
     }
   } else if (next === 'map') {
-    addParagraph(content, `You are here · ${placeName(state.level)}`);
-    addParagraph(content, currentObjective(state).text, 'map-route');
-    if (navigation) addParagraph(content, `Follow the amber marker · ${navigation.label}`);
+    addParagraph(content, tf('You are here · {0}', placeName(state.level)));
+    const objective = currentObjective(state);
+    addParagraph(content, tf(objective.text, ...objective.values ?? []), 'map-route');
+    if (navigation) addParagraph(content, tf('Follow the amber marker · {0}', t(navigation.label)));
     const list = document.createElement('ul');
     list.className = 'map-list';
     for (const area of ['outside', 'inside', ...expeditionAreas] as const) {
@@ -232,17 +377,57 @@ function setPanel(next?: Panel) {
       const name = document.createElement('span');
       name.textContent = placeName(area);
       const status = document.createElement('span');
-      status.textContent = area === state.level ? 'YOU ARE HERE' : areaLocks[area]?.every(flag => has(state, flag)) === false ? 'LOCKED' : 'OPEN';
+      const locked = area === 'coast' || area === 'hut' ? !state.ending : areaLocks[area]?.every(flag => has(state, flag)) === false;
+      status.textContent = t(area === state.level ? 'YOU ARE HERE' : locked ? 'LOCKED' : 'OPEN');
       row.append(name, status);
       list.append(row);
     }
     content.append(list);
   } else {
+    const epilogue = has(state, 'caller');
     addParagraph(content, state.ending === 'seal' ? 'Ending · The chamber is sealed' : 'Ending · The warning reaches the coast');
-    addParagraph(content, `${formatTime(state.elapsed)} active time · ${state.evidence.length} of ${Object.keys(archive).length} optional discoveries archived`);
-    addParagraph(content, 'Return to the station to look for any evidence you missed.');
+    if (epilogue) addParagraph(content, codaTitles[state.coda ?? 'silence']);
+    addParagraph(content, tf('{0} active time · {1} of {2} optional discoveries archived', formatTime(state.elapsed), state.evidence.length, Object.keys(archive).length));
+    addParagraph(content, epilogue
+      ? 'Return to the station or the coast to look for any evidence you missed.'
+      : 'Chapter 06 is open. Something on the coast is still answering. Take the lift up and follow the erased road from the crevasse.');
+    addSplits(content);
+    if (epilogue) action('NEW CYCLE · KEEP YOUR MEMORIES', () => startExpedition(state.cycle + 1));
   }
-  el('resumeButton').focus();
+  (content.querySelector<HTMLElement>('button, input') ?? actionsBox.querySelector('button') ?? el('resumeButton')).focus();
+  content.parentElement!.scrollTop = 0;
+}
+
+function addSplits(content: HTMLElement) {
+  const chapters = Object.entries(state.splits).sort(([a], [b]) => a.localeCompare(b));
+  if (!chapters.length) return;
+  addHeading(content, 'Chapter splits');
+  const table = document.createElement('table');
+  table.className = 'splits';
+  chapters.forEach(([number, start], index) => {
+    const end = chapters[index + 1]?.[1] ?? state.elapsed;
+    const row = table.insertRow();
+    row.insertCell().textContent = tf('Chapter {0}', number);
+    row.insertCell().textContent = formatTime(end - start);
+  });
+  const total = table.insertRow();
+  total.insertCell().textContent = t('Total');
+  total.insertCell().textContent = formatTime(state.elapsed);
+  content.append(table);
+}
+
+function startExpedition(cycle: number) {
+  Object.assign(state, freshSave(), { ending: undefined, cycle });
+  encounter.close();
+  dialogue = undefined;
+  el('dialogue').hidden = true;
+  voice.stop();
+  lastChapter = '';
+  callerVerified = false;
+  visited.clear();
+  if (cycle) award('loop');
+  changeArea(state.level, state);
+  setPanel();
 }
 
 function togglePanel(next: Panel) {
@@ -266,22 +451,29 @@ function advanceDialogue() {
     const finish = dialogue.finish;
     dialogue = undefined;
     el('dialogue').hidden = true;
+    voice.stop();
     finish?.();
     updatePrompt();
     return;
   }
   const [speaker, text] = line;
   el('dialogue').hidden = false;
-  el('dialogueTag').textContent = dialogue.tag;
-  el('speaker').textContent = speaker;
-  el('dialogueText').textContent = text;
-  el('nextDialogue').firstChild!.textContent = dialogue.index + 1 === dialogue.lines.length ? 'ARCHIVE ' : 'CONTINUE ';
+  el('dialogueTag').textContent = t(dialogue.tag);
+  el('speaker').textContent = t(speaker);
+  el('dialogueText').textContent = t(text);
+  el('nextDialogue').firstChild!.textContent = `${t(dialogue.index + 1 === dialogue.lines.length ? 'ARCHIVE' : 'CONTINUE')} `;
+  el('nextDialogue').querySelector('kbd')!.textContent = keyName(settings.keys.interact);
   audio.beep(speaker.includes('VOICE') ? 310 : 460);
+  if (!audio.muted) voice.speak(speaker, t(text), settings.language);
 }
 
 function complete(spot: Hotspot) {
+  if (spot.proof === 'caller' && !has(state, 'caller')) { callerVerified = true; chooseCoda(); return; }
   if (spot.proof && !has(state, spot.proof)) state.progress.push(spot.proof);
   if (spot.record && !state.evidence.includes(spot.record)) state.evidence.push(spot.record);
+  if (spot.proof === 'heard') award('signal');
+  if (state.evidence.length === Object.keys(archive).length) award('archivist');
+
   updateObjective();
   persist();
   if (spot.proof === 'heard') toast('The crew quarters are now accessible.');
@@ -289,17 +481,35 @@ function complete(spot: Hotspot) {
   else if (spot.proof) toast('Objective updated.');
 }
 
+/** The last call in Chapter 06: a choice, then the epilogue it leads to. */
+function chooseCoda() {
+  const options = codaOptions(state);
+  encounter.show(t('One call left'), t('The line is still open. Whatever you do next, the signal will remember it.'), options.map(option => t(option.label)), choice => {
+    encounter.close();
+    state.coda = options[choice].id;
+    state.progress.push('caller');
+    award(state.coda === 'witness' ? 'witness' : 'silence');
+    if (state.elapsed < 25 * 60) award('swift');
+    updateObjective();
+    persist();
+    beginDialogue(coastEpilogue(state), 'HALVARD COAST · LAST TRANSMISSION', () => setPanel('ending'));
+  });
+}
+
 function tell(spot: Hotspot) {
   const entry = spot.record && archive[spot.record];
-  const lines: Line[] = entry ? [[entry.title.toUpperCase(), entry.text]] : spot.lines ?? [];
+  const lines: Line[] = entry ? [[entry.title.toUpperCase(), entry.text]]
+    : [...spot.lines ?? [], ...state.cycle ? spot.cycleLines ?? [] : []];
   if (!lines.length) { complete(spot); return; }
-  beginDialogue(lines, spot.id === 'terminal' ? 'INCOMING TRANSMISSION · 87.6 MHz' : 'KESTREL · FIELD RECORD', () => complete(spot));
+  const tag = spot.id === 'terminal' ? 'INCOMING TRANSMISSION · 87.6 MHz' : spot.area === 'coast' ? 'HALVARD COAST · FIELD RECORD' : 'KESTREL · FIELD RECORD';
+  beginDialogue(lines, tag, () => complete(spot));
 }
 
 function finishExpedition(ending: Ending) {
   encounter.close();
   beginDialogue(endings[ending], 'BOREHOLE NINE · FINAL TRANSMISSION', () => {
     state.ending = ending;
+    award(ending === 'seal' ? 'sealed' : 'warned');
     updateObjective();
     persist();
     setPanel('ending');
@@ -318,10 +528,13 @@ function interact() {
   if (spot.destination) {
     changeArea(spot.destination.area, spot.destination.point);
   } else if (spot.finale) {
-    encounter.show('One transmission left', 'The signal is contained for now. What should your last transmission do?', ['Seal the chamber', 'Warn the coast'], choice =>
+    encounter.show(t('One transmission left'), t('The signal is contained for now. What should your last transmission do?'), [t('Seal the chamber'), t('Warn the coast')], choice =>
       finishExpedition(choice === 0 ? 'seal' : 'send'));
+  } else if (spot.id === 'caller' && callerVerified) {
+    chooseCoda();
   } else if (spot.puzzle) {
-    encounter.puzzle(spot.puzzle, choice => audio.beep(spot.id === 'echo' ? [240, 420, 620][choice] : 380 + choice * 85), () => tell(spot));
+    encounter.puzzle(spot.puzzle, choice => audio.beep(spot.id === 'echo' ? [240, 420, 620][choice] : 380 + choice * 85), () => tell(spot),
+      closeness => audio.tuning(closeness));
   } else tell(spot);
 }
 
@@ -329,62 +542,63 @@ function updatePrompt() {
   const wall = Boolean(panel || encounter.open);
   const show = nearby && !dialogue && !wall;
   el('interact').hidden = !show;
-  if (show) el('interactText').textContent = nearby!.label;
+  if (show) el('interactText').textContent = t(nearby!.label);
+  el('interact').querySelector('kbd')!.textContent = keyName(settings.keys.interact);
   const action = el<HTMLButtonElement>('touchAction');
   action.disabled = wall || (!nearby && !dialogue);
-  action.textContent = dialogue ? 'NEXT' : nearby?.destination ? 'OPEN' : 'USE';
+  action.textContent = t(dialogue ? 'NEXT' : nearby?.destination ? 'ENTER' : 'USE');
 }
 
 function updateFieldHud() {
   el<HTMLMeterElement>('warmth').value = field.warm;
   el<HTMLMeterElement>('attention').value = field.alert * 100;
-  el('warmthValue').textContent = field.shelter ? 'HEATING' : `${Math.round(field.warm)}%`;
-  el('attentionValue').textContent = field.alert > .50 ? 'TRACKED' : field.alert > .12 ? 'HEARD' : 'QUIET';
-  el('whiteout').style.opacity = String(Math.max(0, (37 - field.warm) / 77));
+  el('warmthValue').textContent = field.shelter ? t('HEATING') : `${Math.round(field.warm)}%`;
+  el('attentionValue').textContent = t(field.alert > .50 ? 'TRACKED' : field.alert > .12 ? 'HEARD' : 'QUIET');
+  el('whiteout').style.opacity = String(Math.max(0, (37 - field.warm) / 77, field.storm * .35));
+  el<HTMLMeterElement>('battery').value = field.battery;
+  el('batteryValue').textContent = `${Math.round(field.battery)}%`;
 }
 
 function updateScene(dt: number) {
-  const { x, y, z, facing } = player.body;
+  const { x, z } = player.body;
   player.update(dt);
-  levels.update(dt, x, z);
+  levels.update(dt * (1 + field.storm * 2.5), x, z);
   camera.update(player.body, dt, state.level);
-  flashlight.visible = state.flashlight;
-  flashlight.position.set(x + facing.x * .4, y + 1.05, z + facing.z * .4);
-  flashlight.target.position.set(x + facing.x * 7, .05, z + facing.z * 7);
-  beam.visible = state.flashlight;
-  beam.position.set(x + facing.x * .48, .095, z + facing.z * .48);
-  beam.rotation.y = Math.atan2(-facing.z, facing.x);
-
-  waypoint.visible = Boolean(navigation && !dialogue && !encounter.open);
+  effects.update(clock, player.body, {
+    flashlight: state.flashlight,
+    marker: navigation && !dialogue && !encounter.open ? navigation : undefined,
+    showPrints: exposed(state.level), prints: field.prints, figure: field.figure, alert: field.alert,
+  });
   arrow.hidden = !navigation;
   if (navigation) {
-    waypoint.position.set(navigation.x, .1, navigation.z);
     const dx = navigation.x - x;
     const dz = navigation.z - z;
     const range = Math.hypot(dx, dz);
     const angle = Math.atan2((dx + dz) / Math.sqrt(3), dx - dz);
     arrow.style.transform = `rotate(${angle}rad)`;
     const distance = el('objectiveDistance');
-    const readout = range < 1.7 ? 'NEARBY' : `${Math.round(range)} M`;
+    const readout = range < 1.7 ? t('NEARBY') : tf('{0} M', Math.round(range));
     if (distance.textContent !== readout) distance.textContent = readout;
   } else el('objectiveDistance').textContent = '';
-  diamond.position.y = 1.08 + Math.sin(clock * 2.8) * .16;
-  diamond.rotation.y = clock * 1.5;
   levels.terminalLight.intensity = 5 + Math.sin(clock * 3) * .4;
-  figure.visible = Boolean(field.figure);
-  if (field.figure) {
-    figure.position.set(field.figure.x, Math.sin(clock * 5) * .035, field.figure.z);
-    figureMaterial.opacity = .65 + field.alert * .28 + Math.sin(clock * 9) * .05;
-  }
 }
 
 function fixed(dt: number) {
-  if (!state.ending) state.elapsed += dt;
+  if (!has(state, 'caller')) state.elapsed += dt;
   clock += dt;
-  if (input.pressed('KeyF') && !encounter.open) {
-    state.flashlight = !state.flashlight;
+  if (input.pressed('flashlight') && !encounter.open) {
+    if (!state.flashlight && exposed(state.level) && field.battery <= 0) toast('Battery flat. Recharge at a heated beacon.');
+    else {
+      state.flashlight = !state.flashlight;
+      updateObjective();
+      audio.beep(240);
+    }
+  }
+  if (state.flashlight && exposed(state.level) && field.battery <= 0) {
+    state.flashlight = false;
     updateObjective();
-    audio.beep(240);
+    toast('Your flashlight died. Heated beacons recharge it.');
+    caption('Flashlight clicks off');
   }
 
   const before = { x: player.body.x, z: player.body.z };
@@ -393,8 +607,8 @@ function fixed(dt: number) {
   move(player.body, {
     right: stopped ? 0 : input.right,
     down: stopped ? 0 : input.down,
-    run: input.held('ShiftLeft', 'ShiftRight'),
-    jump: input.pressed('Space') && !stopped,
+    run: input.held('run'),
+    jump: input.pressed('jump') && !stopped,
   }, dt, walkAreas[state.level]);
   const actualDistance = Math.hypot(player.body.x - before.x, player.body.z - before.z);
   const speed = actualDistance / dt;
@@ -419,11 +633,22 @@ function fixed(dt: number) {
     if (cracking && !wasCracking) {
       audio.step('snow', 1.3);
       toast('Thin ice cracking. Jump or move back.');
+      caption('Ice cracking underfoot');
     }
+    const storming = field.storm > .4;
+    if (storming !== wasStorm) {
+      toast(storming ? 'Storm gust. Colder, but the wind hides your steps.' : 'The gust passes.');
+      caption(storming ? 'Wind rising to a roar' : 'Wind dropping');
+      wasStorm = storming;
+    }
+    audio.gust(field.storm);
+    if (field.tracking && !wasTracking) caption('Slow footsteps, following your trail');
+    wasTracking = field.tracking;
     wasCracking = cracking;
     if (result) {
       placePlayer(result.checkpoint);
       toast(result.message);
+      award('thaw');
       persist();
     }
     const status = field.shelter ? 'heater' : field.alert > .50 ? 'alert' : field.warm < 26 ? 'cold' : '';
@@ -433,6 +658,13 @@ function fixed(dt: number) {
       if (status === 'cold') toast('Warmth low. Find a heated beacon.');
     }
     lastFieldStatus = status;
+    // The heartbeat starts once the figure hears you and quickens as it closes in.
+    heartbeat -= dt;
+    if (field.alert > .12 && !field.shelter && heartbeat <= 0) {
+      if (heartbeat < -1.5) caption('Your heartbeat, loud in your ears');
+      audio.heartbeat(field.alert);
+      heartbeat = 1.25 - field.alert * .7;
+    }
     updateFieldHud();
   }
 
@@ -445,7 +677,15 @@ function fixed(dt: number) {
       if (distance < spot.radius && distance < nearest) { nearby = spot; nearest = distance; }
     }
   }
-  if (input.pressed('KeyE', 'Enter')) interact();
+  if (input.pressed('interact')) interact();
+  if (input.pressed('journal')) togglePanel('journal');
+  if (input.pressed('map')) togglePanel('map');
+  // A gentle nudge for players who stop moving for a long time.
+  idleTimer = speed > .2 || dialogue || encounter.open ? 0 : idleTimer + dt;
+  if (idleTimer > 50) {
+    idleTimer = 0;
+    toast(tf('VOSS — Where was I headed? ({0}: map)', keyName(settings.keys.map)));
+  }
   updatePrompt();
   updateScene(dt);
 
@@ -454,6 +694,14 @@ function fixed(dt: number) {
   if (toastTimer > 0) {
     toastTimer -= dt;
     if (toastTimer <= 0) el('toast').style.opacity = '0';
+  }
+  if (captionTimer > 0) {
+    captionTimer -= dt;
+    if (captionTimer <= 0) el('caption').classList.remove('show');
+  }
+  if (titleTimer > 0) {
+    titleTimer -= dt;
+    if (titleTimer <= 0) el('titleCard').classList.remove('show');
   }
 }
 
@@ -469,8 +717,8 @@ const soundPreference = 'the-white-signal:sound';
 try { audio.muted = localStorage.getItem(soundPreference) === 'off'; }
 catch { audio.muted = false; }
 function showSoundStatus() {
-  el('soundLabel').textContent = audio.muted ? 'SOUND OFF' : 'SOUND ON';
-  soundButton.setAttribute('aria-label', audio.muted ? 'Enable audio' : 'Mute audio');
+  el('soundLabel').textContent = t(audio.muted ? 'SOUND OFF' : 'SOUND ON');
+  soundButton.setAttribute('aria-label', t(audio.muted ? 'Enable audio' : 'Mute audio'));
 }
 showSoundStatus();
 function enableSoundOnInput(event: Event) {
@@ -483,37 +731,85 @@ window.addEventListener('keydown', enableSoundOnInput);
 window.addEventListener('pointerdown', enableSoundOnInput);
 soundButton.addEventListener('click', () => {
   audio.toggle();
+  if (audio.muted) voice.stop();
   try { localStorage.setItem(soundPreference, audio.muted ? 'off' : 'on'); } catch { /* Audio still works without storage. */ }
   showSoundStatus();
 });
 el('restartButton').addEventListener('click', () => {
-  if (!window.confirm('Restart the expedition and clear this checkpoint?')) return;
-  Object.assign(state, freshSave(), { ending: undefined });
-  encounter.close();
-  dialogue = undefined;
-  el('dialogue').hidden = true;
-  changeArea(state.level, state);
-  setPanel();
+  if (!window.confirm(t('Restart the expedition and clear this checkpoint?'))) return;
+  startExpedition(0);
 });
+
+function back() {
+  if (panel === 'settings' || panel === 'achievements') setPanel(settingsReturn);
+  else if (panel === 'menu') return;
+  else if (panel) setPanel();
+  else if (encounter.open) encounter.close();
+  else togglePanel('pause');
+}
+
+// Capture phase, so a key being rebound never also triggers its old action.
+window.addEventListener('keydown', event => {
+  if (!rebinding) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (event.code !== 'Escape') {
+    // A key used by another action swaps over, so no two actions share a key.
+    const clash = actions.find(name => name !== rebinding && settings.keys[name] === event.code);
+    if (clash) settings.keys[clash] = settings.keys[rebinding];
+    settings.keys[rebinding] = event.code;
+    saveSettings(settings);
+    applySettings();
+  }
+  rebinding = undefined;
+  setPanel('settings');
+}, true);
 
 window.addEventListener('keydown', event => {
   if (event.repeat) return;
   if (event.code === 'Escape') {
     event.preventDefault();
-    if (panel) setPanel();
-    else if (encounter.open) encounter.close();
-    else togglePanel('pause');
+    back();
     return;
   }
-  if (event.code === 'KeyJ') togglePanel('journal');
-  if (event.code === 'KeyM') togglePanel('map');
+  // The journal and map keys close their own panel and switch between the two.
+  if (panel === 'journal' || panel === 'map') {
+    if (input.matches('journal', event.code)) togglePanel('journal');
+    else if (input.matches('map', event.code)) togglePanel('map');
+  }
   if (!panel && encounter.open && /^Digit[1-9]$/.test(event.code)) encounter.press(Number(event.key) - 1);
 });
+
+// Gamepad focus moves between the buttons of whichever menu or puzzle is open.
+input.onPad = (command: PadCommand) => {
+  if (command === 'pause') {
+    if (panel === 'pause') setPanel();
+    else if (!panel && !encounter.open) setPanel('pause');
+    return;
+  }
+  if (command === 'back') { back(); return; }
+  const container = panel ? el('overlay') : el('puzzle');
+  const focusable = Array.from(container.querySelectorAll<HTMLElement>('button:not([disabled]):not(.hidden-ui), input'))
+    .filter(item => item.offsetParent !== null);
+  const active = document.activeElement as HTMLElement | null;
+  if (command === 'confirm') {
+    (active && focusable.includes(active) ? active : focusable[0])?.click();
+    return;
+  }
+  if (active instanceof HTMLInputElement && active.type === 'range' && (command === 'left' || command === 'right')) {
+    if (command === 'left') active.stepDown(); else active.stepUp();
+    active.dispatchEvent(new Event('input'));
+    return;
+  }
+  const index = active ? focusable.indexOf(active) : -1;
+  const step = command === 'up' || command === 'left' ? -1 : 1;
+  focusable[(index + step + focusable.length) % focusable.length]?.focus();
+};
 document.addEventListener('visibilitychange', () => {
   input.clear();
   accumulator = 0;
   last = performance.now();
-  if (document.hidden) persist();
+  if (document.hidden) { persist(); voice.stop(); }
   audio.pause(document.hidden || Boolean(panel));
 });
 window.addEventListener('pagehide', persist);
@@ -531,6 +827,7 @@ function frame(now: number) {
   const delta = Math.min((now - last) / 1000, .1);
   last = now;
   if (document.hidden) return;
+  input.pollGamepad(Boolean(panel || encounter.open));
   if (!panel) {
     accumulator += delta;
     while (accumulator >= 1 / 60) { fixed(1 / 60); accumulator -= 1 / 60; }
@@ -539,6 +836,31 @@ function frame(now: number) {
   renderer.render(scene, camera.camera);
 }
 
+// Development-only hooks for browser checks. Vite strips this block from production builds.
+if (import.meta.env.DEV) {
+  void import('./debug').then(module => module.installDebugOverlay(scene, state));
+  Object.assign(window, { whiteSignal: {
+    state,
+    go: (area: Area, x: number, z: number) => changeArea(area, { x, z }),
+    close: () => setPanel(),
+    field,
+    body: () => player.body,
+    audio,
+    persist,
+    pad: () => input.pollGamepad(Boolean(panel || encounter.open)),
+    grant: (...flags: typeof state.progress) => { state.progress.push(...flags.filter(flag => !has(state, flag))); updateObjective(); },
+    // Advance the fixed simulation without rendering, for checks in a hidden tab.
+    tick: (frames = 1) => { for (let i = 0; i < frames; i++) if (!panel) fixed(1 / 60); },
+  } });
+}
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => { /* The game works online without it. */ });
+}
+
+applySettings();
+showSoundStatus();
 resize();
 changeArea(state.level, state, false);
+setPanel('menu');
 requestAnimationFrame(frame);

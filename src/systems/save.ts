@@ -1,7 +1,7 @@
 import { radioRoom, station, walkAreas } from '../world/layout';
 import { expedition, expeditionAreas, type Area } from '../world/expedition-layout';
 import { canStandAt, type GroundPoint } from './movement';
-import { archive, milestones, type ArchiveId, type Ending, type Milestone } from './progress';
+import { archive, milestones, type ArchiveId, type Coda, type Ending, type Milestone } from './progress';
 
 export interface Save extends GroundPoint {
   level: Area;
@@ -9,14 +9,19 @@ export interface Save extends GroundPoint {
   progress: Milestone[];
   evidence: ArchiveId[];
   ending?: Ending;
+  coda?: Coda;
   elapsed: number;
+  /** Active time when each chapter began, keyed by chapter number. */
+  splits: Record<string, number>;
+  /** 0 for the first expedition; New Game+ increments it. */
+  cycle: number;
 }
 
 const KEY = 'the-white-signal:v1';
 const areas: readonly Area[] = ['outside', 'inside', ...expeditionAreas];
 
 export const freshSave = (): Save => ({
-  level: 'outside', ...station.spawn, flashlight: true, progress: [], evidence: [], elapsed: 0,
+  level: 'outside', ...station.spawn, flashlight: true, progress: [], evidence: [], elapsed: 0, splits: { '01': 0 }, cycle: 0,
 });
 
 export function loadSave(): Save {
@@ -39,6 +44,10 @@ export function loadSave(): Save {
     return {
       level, ...position, flashlight: saved.flashlight !== false, progress, evidence, ending,
       elapsed: Number.isFinite(saved.elapsed) ? Math.max(0, saved.elapsed) : 0,
+      splits: Object.fromEntries(Object.entries(saved.splits ?? {}).filter(([chapter, time]) =>
+        /^\d\d$/.test(chapter) && Number.isFinite(time))) as Record<string, number>,
+      cycle: Number.isInteger(saved.cycle) && saved.cycle > 0 ? saved.cycle : 0,
+      coda: progress.includes('caller') && ['silence', 'listen', 'witness'].includes(saved.coda) ? saved.coda : undefined,
     };
   } catch {
     return freshSave();

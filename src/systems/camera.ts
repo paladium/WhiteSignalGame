@@ -25,7 +25,7 @@ export class FollowCamera {
     const center = inside ? roomCenter : exteriorCenter;
 
     // Keep the room framed on desktop. On narrow screens, keep the player in view.
-    const outdoors = area === 'outside' || area === 'ridge' || area === 'crevasse';
+    const outdoors = area === 'outside' || area === 'ridge' || area === 'crevasse' || area === 'coast';
     const distanceFromYard = Math.hypot(player.x - exteriorCenter.x, player.z - exteriorCenter.z);
     const follow = expanded ? 1 : outdoors
       ? Math.max(portrait ? .89 : .38, Math.min(1, (distanceFromYard - 7) / 13))
