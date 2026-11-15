@@ -6,7 +6,7 @@ import { Character } from './systems/character';
 import { FollowCamera } from './systems/camera';
 import { AudioSystem } from './systems/audio';
 import { move, type GroundPoint } from './systems/movement';
-import { loadSave, saveGame, freshSave } from './systems/save';
+import { loadSave, saveGame, freshSave, ECHO_LIMIT } from './systems/save';
 import { Levels } from './world/levels';
 import { walkAreas } from './world/layout';
 import { expedition, expeditionAreas, isFieldArea, type Area } from './world/expedition-layout';
@@ -21,12 +21,17 @@ import { actions, keyName, loadSettings, saveSettings, type Action } from './sys
 import { Achievements, achievementList, type AchievementId } from './systems/achievements';
 import type { PadCommand } from './systems/input';
 import { Voice } from './systems/voice';
+import { Joystick } from './systems/joystick';
+import { signalStrength } from './systems/compass';
+import { YardStalker } from './systems/stalker';
+import { blackout, ghostAt, sceneEvents, type Cue } from './world/events';
 
 createUI();
 const state=loadSave();
 const settings = loadSettings();
 const achievements = new Achievements();
 const voice = new Voice();
+const joystick = new Joystick(el('stickZone'), el('stickBase'), el('stickKnob'));
 let renderer: THREE.WebGLRenderer;
 try { renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'}); }
 catch { el('viewport').innerHTML='<p style="padding:30vh 10%;position:relative;z-index:20">The White Signal needs WebGL. Please enable hardware acceleration and reload in a supported browser.</p>'; throw new Error('WebGL unavailable'); }
@@ -37,6 +42,7 @@ renderer.domElement.setAttribute('aria-label','Snow-covered Kestrel Station. Use
 const scene=new THREE.Scene();scene.background=new THREE.Color('#152b3b');scene.fog=new THREE.FogExp2('#243f50', .009);
 const levels=new Levels(scene), player=new Character(scene), camera=new FollowCamera(), input=new Input(), audio=new AudioSystem();
 const effects = new SceneEffects(scene);
+const stalker = new YardStalker();
 const field = new FieldConditions();
 const encounter = new Encounter();
 const arrow = el('objectiveArrow');
@@ -66,6 +72,53 @@ let wasStorm = false;
 // Set once the caller is verified, so stepping back from the last choice doesn't repeat the puzzle.
 let callerVerified = false;
 const visited = new Set<Area>();
+// Scene events queue cues on the simulation clock, so pauses and menus hold them.
+const scheduled: { at: number; cue: Cue }[] = [];
+const played = new Set<string>();
+let flickerUntil = 0;
+let apparition: (GroundPoint & { start: number; until: number }) | undefined;
+let lastPower = 1;
+let lastSpeed = 0;
+let wasHighTide = false;
+let mimicNoticed = false;
+let areaClock = 0;
+let echoTimer = 0;
+let echoNoticed = false;
+// Chapter 04: once the badge is out of the receiver, the trench starts to collapse.
+let collapseAt: number | undefined;
+let collapseRumble = 0;
+const collapseSeconds = () => settings.difficulty === 'story' ? 75 : settings.difficulty === 'hard' ? 32 : 42;
+const collapsing = () => state.level === 'crevasse' && has(state, 'echo') && !has(state, 'override');
+
+function vibrate(pattern: number | number[]) {
+  try { navigator.vibrate?.(pattern); } catch { /* Not every browser can vibrate. */ }
+}
+
+function runEvents() {
+  for (const event of sceneEvents) {
+    if (played.has(event.id) || event.area !== state.level || !event.when(state)) continue;
+    played.add(event.id);
+    for (const [seconds, cue] of event.cues) scheduled.push({ at: clock + seconds, cue });
+  }
+}
+
+function playCue(cue: Cue) {
+  switch (cue.kind) {
+    case 'caption': caption(cue.text); break;
+    case 'toast': toast(cue.text); break;
+    case 'voice':
+      caption(`${t(cue.speaker)} — ${t(cue.text)}`, 4.5);
+      audio.beep(310);
+      if (!audio.muted) voice.speak(cue.speaker, t(cue.text), settings.language);
+      break;
+    case 'flicker': flickerUntil = clock + cue.seconds; break;
+    case 'apparition': apparition = { ...cue.at, start: clock, until: clock + cue.seconds }; break;
+    case 'trail': effects.layTrail(cue.points); break;
+    case 'stinger': audio.stinger(); break;
+    case 'shake': camera.shake(.7); break;
+    case 'vibrate': vibrate([60, 40, 120]); break;
+  }
+}
 
 const snowy = (area: Area) => area === 'outside' || isFieldArea(area);
 const exposed = isFieldArea;
@@ -204,8 +257,18 @@ function changeArea(area: Area, point: GroundPoint, announce = true) {
   scene.fog = new THREE.FogExp2(outdoors ? '#243f50' : '#15232b', exposed(area) ? .012 : outdoors ? .009 : .0045);
   areaLabels(area);
   el('worldCaption').hidden = area !== 'outside';
-  el('fieldMeters').hidden = !exposed(area);
-  el('battery').parentElement!.hidden = settings.difficulty === 'story';
+  const dark = blackout(state);
+  el('fieldMeters').hidden = !exposed(area) && !dark;
+  el('warmth').parentElement!.hidden = dark;
+  el('battery').parentElement!.hidden = dark || settings.difficulty === 'story';
+  scheduled.length = 0;
+  apparition = undefined;
+  effects.layTrail([]);
+  stalker.reset();
+  lastPower = -1;
+  collapseAt = undefined;
+  wasHighTide = false;
+  areaClock = 0;
   el('game').classList.toggle('indoors', !outdoors);
   nearby = undefined;
   placePlayer(point);
@@ -223,6 +286,7 @@ function changeArea(area: Area, point: GroundPoint, announce = true) {
     if (bark && !visited.has(area)) setTimeout(() => { if (state.level === area && !dialogue) toast(bark); }, 2600);
   }
   visited.add(area);
+  runEvents();
 }
 
 function addParagraph(content: HTMLElement, text: string, className = '') {
@@ -277,6 +341,7 @@ function setPanel(next?: Panel) {
   const k = (name: Action) => keyName(settings.keys[name]);
   if (next === 'menu') {
     addParagraph(content, 'Antarctica, August 17, 1987. Kestrel Station stopped answering at 03:14 UTC.');
+    addParagraph(content, '🎧 Best with headphones: the radio, the wind and the figures are heard before they are seen.', 'map-route');
     if (state.cycle) addParagraph(content, tf('Cycle {0}. Some of this will feel familiar.', state.cycle + 1), 'map-route');
     const started = state.elapsed > 0 || state.progress.length > 0;
     if (started) action(tf('CONTINUE · {0} · CHAPTER {1}', formatTime(state.elapsed), chapter(state).number), () => setPanel());
@@ -318,6 +383,9 @@ function setPanel(next?: Panel) {
       settings.textScale = settings.textScale === 1 ? 1.15 : settings.textScale === 1.15 ? 1.3 : 1;
     });
     toggle('Sound captions', () => settings.captions ? 'ON' : 'OFF', () => { settings.captions = !settings.captions; });
+    toggle('Navigation', () => settings.navigation === 'radio' ? 'RADIO · sweep to find the signal' : 'MARKER · amber arrow', () => {
+      settings.navigation = settings.navigation === 'radio' ? 'marker' : 'radio';
+    });
     if (voice.available) toggle('Voice-over', () => settings.voice ? 'ON' : 'OFF', () => { settings.voice = !settings.voice; if (!settings.voice) voice.stop(); });
     toggle('Difficulty', () => ({ story: 'STORY · no capture, mild cold', normal: 'NORMAL', hard: 'HARD · colder, sharper ears' })[settings.difficulty], () => {
       settings.difficulty = settings.difficulty === 'normal' ? 'hard' : settings.difficulty === 'hard' ? 'story' : 'normal';
@@ -369,7 +437,7 @@ function setPanel(next?: Panel) {
     addParagraph(content, tf('You are here · {0}', placeName(state.level)));
     const objective = currentObjective(state);
     addParagraph(content, tf(objective.text, ...objective.values ?? []), 'map-route');
-    if (navigation) addParagraph(content, tf('Follow the amber marker · {0}', t(navigation.label)));
+    if (navigation) addParagraph(content, tf(settings.navigation === 'radio' ? 'Sweep for the signal · {0}' : 'Follow the amber marker · {0}', t(navigation.label)));
     const list = document.createElement('ul');
     list.className = 'map-list';
     for (const area of ['outside', 'inside', ...expeditionAreas] as const) {
@@ -417,7 +485,9 @@ function addSplits(content: HTMLElement) {
 }
 
 function startExpedition(cycle: number) {
-  Object.assign(state, freshSave(), { ending: undefined, cycle });
+  // A new cycle remembers the route you just walked; a fresh expedition forgets everything.
+  const remembered = cycle ? state.echoes : {};
+  Object.assign(state, freshSave(), { ending: undefined, cycle, pastEchoes: remembered });
   encounter.close();
   dialogue = undefined;
   el('dialogue').hidden = true;
@@ -472,6 +542,17 @@ function complete(spot: Hotspot) {
   if (spot.proof && !has(state, spot.proof)) state.progress.push(spot.proof);
   if (spot.record && !state.evidence.includes(spot.record)) state.evidence.push(spot.record);
   if (spot.proof === 'heard') award('signal');
+  // Story beats that change the place itself, right after the step that causes them.
+  if (spot.proof === 'triangulated') {
+    field.forceStorm(22);
+    scheduled.push({ at: clock + .4, cue: { kind: 'caption', text: 'A wall of snow rolls over the ridge' } });
+    scheduled.push({ at: clock + .4, cue: { kind: 'shake' } });
+    scheduled.push({ at: clock + 1.2, cue: { kind: 'voice', speaker: 'UNKNOWN VOICE', text: 'You found me. Now find your way back.' } });
+  }
+  if (spot.proof === 'east') {
+    scheduled.push({ at: clock + .8, cue: { kind: 'apparition', at: { x: 21, z: -6 }, seconds: 2 } });
+    scheduled.push({ at: clock + .8, cue: { kind: 'flicker', seconds: 1.2 } });
+  }
   if (state.evidence.length === Object.keys(archive).length) award('archivist');
 
   updateObjective();
@@ -533,8 +614,9 @@ function interact() {
   } else if (spot.id === 'caller' && callerVerified) {
     chooseCoda();
   } else if (spot.puzzle) {
+    const source = spot.puzzle.note && hotspots.find(item => item.id === spot.puzzle!.note!.spot);
     encounter.puzzle(spot.puzzle, choice => audio.beep(spot.id === 'echo' ? [240, 420, 620][choice] : 380 + choice * 85), () => tell(spot),
-      closeness => audio.tuning(closeness));
+      closeness => audio.tuning(closeness), source?.lines?.[spot.puzzle.note!.line]);
   } else tell(spot);
 }
 
@@ -564,12 +646,54 @@ function updateScene(dt: number) {
   player.update(dt);
   levels.update(dt * (1 + field.storm * 2.5), x, z);
   camera.update(player.body, dt, state.level);
+  const dark = blackout(state);
+  if (state.level === 'outside') {
+    // Station lights stutter during a flicker cue and stay off in the blackout.
+    const power = clock < flickerUntil ? (Math.sin(clock * 41) > .2 ? .12 : 1) : dark ? 0 : 1;
+    if (power !== lastPower) { levels.setPower(power); lastPower = power; }
+  }
+  const ghostVisible = state.level === 'quarters' && has(state, 'manifest') && !has(state, 'footprints');
+  let ghost: (GroundPoint & { opacity: number }) | undefined;
+  if (ghostVisible) {
+    const point = ghostAt(clock);
+    const dx = point.x - x, dz = point.z - z, range = Math.hypot(dx, dz);
+    const facing = (dx * player.body.facing.x + dz * player.body.facing.z) / (range || 1);
+    const lit = state.flashlight && range < 8.5 && facing > .82;
+    ghost = { ...point, opacity: point.fade * (lit ? .62 : .05) };
+  }
+  // New Game+: last cycle's Voss walks his old route through this area.
+  const past = state.cycle ? state.pastEchoes[state.level] : undefined;
+  if (!ghost && past && past.length >= 4) {
+    const step = areaClock / .5;
+    const index = Math.floor(step);
+    if (index < past.length / 2 - 1) {
+      const blend = step - index;
+      const ex = past[index * 2] + (past[index * 2 + 2] - past[index * 2]) * blend;
+      const ez = past[index * 2 + 1] + (past[index * 2 + 3] - past[index * 2 + 1]) * blend;
+      ghost = { x: ex, z: ez, opacity: .32 + Math.sin(clock * 6) * .04 };
+      if (!echoNoticed && Math.hypot(ex - x, ez - z) < 10) {
+        echoNoticed = true;
+        // Queued, so the area-name toast on arrival doesn't cover it.
+        scheduled.push({ at: clock + 2.5, cue: { kind: 'toast', text: 'VOSS — That’s me. The last time I came through here.' } });
+      }
+    }
+  }
+  const sighting = apparition && clock < apparition.until
+    ? { ...apparition, opacity: .85 * Math.min(1, (clock - apparition.start) / .3, (apparition.until - clock) / .5) } : undefined;
+  effects.breathe(player.body, dt, snowy(state.level), lastSpeed > 3.5);
   effects.update(clock, player.body, {
+    ghost, apparition: sighting, flicker: clock < flickerUntil,
+    tide: state.level === 'coast' ? Number(field.highTide) : undefined,
     flashlight: state.flashlight,
-    marker: navigation && !dialogue && !encounter.open ? navigation : undefined,
-    showPrints: exposed(state.level), prints: field.prints, figure: field.figure, alert: field.alert,
+    marker: navigation && !dialogue && !encounter.open && (settings.navigation === 'marker' ||
+      Math.hypot(navigation.x - x, navigation.z - z) < 4) ? navigation : undefined,
+    showPrints: exposed(state.level), prints: field.prints,
+    figure: exposed(state.level) ? field.figure : dark ? stalker.figure : undefined,
+    alert: exposed(state.level) ? field.alert : dark ? stalker.alert : 0,
   });
-  arrow.hidden = !navigation;
+  const radio = settings.navigation === 'radio';
+  arrow.hidden = !navigation || radio;
+  el('signalHud').hidden = !navigation || !radio;
   if (navigation) {
     const dx = navigation.x - x;
     const dz = navigation.z - z;
@@ -577,13 +701,25 @@ function updateScene(dt: number) {
     const angle = Math.atan2((dx + dz) / Math.sqrt(3), dx - dz);
     arrow.style.transform = `rotate(${angle}rad)`;
     const distance = el('objectiveDistance');
-    const readout = range < 1.7 ? t('NEARBY') : tf('{0} M', Math.round(range));
+    const left = collapseAt !== undefined ? Math.max(0, Math.ceil(collapseAt - clock)) : undefined;
+    const readout = left !== undefined ? tf('COLLAPSE IN {0} S', left)
+      : range < 1.7 ? t('NEARBY') : radio ? '' : tf('{0} M', Math.round(range));
     if (distance.textContent !== readout) distance.textContent = readout;
-  } else el('objectiveDistance').textContent = '';
+    if (radio) {
+      const strength = signalStrength(player.body, navigation);
+      el('signalHud').querySelectorAll('i').forEach((bar, i) => bar.classList.toggle('on', i < Math.round(strength * 8)));
+      el('signalHud').classList.toggle('locked', strength > .8);
+      audio.compass(dialogue || encounter.open ? null : strength, dt);
+    } else audio.compass(null, dt);
+  } else {
+    el('objectiveDistance').textContent = '';
+    audio.compass(null, dt);
+  }
   levels.terminalLight.intensity = 5 + Math.sin(clock * 3) * .4;
 }
 
 function fixed(dt: number) {
+  input.touchStick = encounter.open ? { x: 0, y: 0 } : { x: joystick.x, y: joystick.y };
   if (!has(state, 'caller')) state.elapsed += dt;
   clock += dt;
   if (input.pressed('flashlight') && !encounter.open) {
@@ -612,6 +748,20 @@ function fixed(dt: number) {
   }, dt, walkAreas[state.level]);
   const actualDistance = Math.hypot(player.body.x - before.x, player.body.z - before.z);
   const speed = actualDistance / dt;
+  lastSpeed = speed;
+  areaClock += dt;
+  // Record this cycle's route for the next one.
+  echoTimer += dt;
+  if (echoTimer >= .5) {
+    echoTimer = 0;
+    const route = state.echoes[state.level] ??= [];
+    if (route.length < ECHO_LIMIT * 2 && speed > .2) route.push(Math.round(player.body.x * 10) / 10, Math.round(player.body.z * 10) / 10);
+  }
+  for (let i = scheduled.length - 1; i >= 0; i--) {
+    if (scheduled[i].at > clock) continue;
+    const [{ cue }] = scheduled.splice(i, 1);
+    playCue(cue);
+  }
   if (player.body.grounded) {
     const surface = snowy(state.level) ? 'snow' : 'floor';
     if (!grounded) {
@@ -634,6 +784,8 @@ function fixed(dt: number) {
       audio.step('snow', 1.3);
       toast('Thin ice cracking. Jump or move back.');
       caption('Ice cracking underfoot');
+      camera.shake(.35, .4);
+      vibrate(50);
     }
     const storming = field.storm > .4;
     if (storming !== wasStorm) {
@@ -642,12 +794,23 @@ function fixed(dt: number) {
       wasStorm = storming;
     }
     audio.gust(field.storm);
+    if (state.level === 'coast' && field.highTide !== wasHighTide) {
+      wasHighTide = field.highTide;
+      toast(wasHighTide ? 'The tide is coming in. The sea ice won’t hold.' : 'The tide is going out. The ice holds again.');
+      caption(wasHighTide ? 'Water rushes under the ice' : 'The water drains away with a hiss');
+    }
     if (field.tracking && !wasTracking) caption('Slow footsteps, following your trail');
+    if (field.mimicking && !mimicNoticed && field.figure && Math.hypot(field.figure.x - player.body.x, field.figure.z - player.body.z) < 9) {
+      mimicNoticed = true;
+      toast('VOSS — It stopped when I stopped. It’s copying me.');
+    }
     wasTracking = field.tracking;
     wasCracking = cracking;
     if (result) {
       placePlayer(result.checkpoint);
       toast(result.message);
+      camera.shake(1, .7);
+      vibrate([120, 60, 220]);
       award('thaw');
       persist();
     }
@@ -666,6 +829,59 @@ function fixed(dt: number) {
       heartbeat = 1.25 - field.alert * .7;
     }
     updateFieldHud();
+  }
+
+  if (collapsing() && !dialogue) {
+    if (collapseAt === undefined) {
+      collapseAt = clock + collapseSeconds();
+      audio.stinger();
+      camera.shake(.8, .8);
+      vibrate([100, 50, 100]);
+      caption('The trench groans. Ice is breaking up behind you');
+      toast('The trench is collapsing. Reach the lift override before it goes.');
+    }
+    collapseRumble -= dt;
+    if (collapseRumble <= 0) {
+      collapseRumble = 2.5 + Math.random() * 2;
+      camera.shake(.3, .4);
+      audio.step('snow', 1.4, true);
+    }
+    if (clock >= collapseAt) {
+      placePlayer({ x: 5.5, z: -3.3 });
+      toast('The ice gave way. You hauled yourself back up by the heater. Try again.');
+      camera.shake(1.1, .8);
+      vibrate([150, 60, 250]);
+      audio.stinger();
+      collapseAt = clock + collapseSeconds();
+      persist();
+    }
+  } else if (!collapsing()) collapseAt = undefined;
+
+  if (!stopped && blackout(state)) {
+    stalker.difficulty = settings.difficulty;
+    const caught = stalker.tick(player.body, speed, state.flashlight, dt);
+    if (caught) {
+      placePlayer(caught.checkpoint);
+      toast('It caught you in the dark. You came to by a lit door.');
+      camera.shake(1, .7);
+      vibrate([120, 60, 220]);
+      audio.stinger();
+      award('thaw');
+      persist();
+    }
+    const status = stalker.safe ? 'light' : stalker.alert > .45 ? 'alert' : '';
+    if (!caught && status !== lastFieldStatus) {
+      if (status === 'light') toast('Lamplight · It won’t step into the light');
+      if (status === 'alert') { audio.beep(130); vibrate(80); toast('It heard you. Freeze, kill your light, or get to a lit door.'); }
+    }
+    lastFieldStatus = status;
+    heartbeat -= dt;
+    if (stalker.alert > .12 && !stalker.safe && heartbeat <= 0) {
+      audio.heartbeat(stalker.alert);
+      heartbeat = 1.25 - stalker.alert * .7;
+    }
+    el<HTMLMeterElement>('attention').value = stalker.alert * 100;
+    el('attentionValue').textContent = t(stalker.safe ? 'SAFE' : stalker.alert > .45 ? 'TRACKED' : stalker.alert > .12 ? 'HEARD' : 'QUIET');
   }
 
   nearby = undefined;
@@ -846,6 +1062,7 @@ if (import.meta.env.DEV) {
     field,
     body: () => player.body,
     audio,
+    scheduled,
     persist,
     pad: () => input.pollGamepad(Boolean(panel || encounter.open)),
     grant: (...flags: typeof state.progress) => { state.progress.push(...flags.filter(flag => !has(state, flag))); updateObjective(); },

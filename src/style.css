@@ -203,3 +203,42 @@
 .sequence .signal-meter.locked { border-color: #79e0b0; }
 .sequence .signal-meter.locked i.on { background: #79e0b0; box-shadow: 0 0 6px #79e0b066; }
 .sequence .dial.locked { accent-color: #79e0b0; }
+/* Floating joystick on touch screens replaces the four arrow buttons. */
+#stickZone { display: none; }
+@media (pointer: coarse) {
+  .touch-controls .touch-move { display: none; }
+  .touch-controls { justify-content: flex-end; }
+  .hud { pointer-events: none; }
+  #stickZone { display: block; position: absolute; left: 0; bottom: 0; width: 55%; height: 62%; z-index: 4; touch-action: none; }
+  #stickBase { position: absolute; left: -52px; top: -52px; width: 104px; height: 104px; border-radius: 50%; border: 1px solid #9cb9c355; background: #142a3766; opacity: 0; transition: opacity .15s; pointer-events: none; }
+  #stickBase.active { opacity: 1; }
+  #stickKnob { position: absolute; left: 30px; top: 30px; width: 44px; height: 44px; border-radius: 50%; background: #d9a876cc; box-shadow: 0 0 12px #0008; }
+  #stickHint { position: absolute; left: 28px; bottom: max(28px, env(safe-area-inset-bottom)); color: #9cb9c399; font-size: 9px; letter-spacing: .12em; pointer-events: none; }
+  #stickZone:has(#stickBase.active) #stickHint { opacity: 0; }
+}
+.signal-hud { display: inline-flex; flex-direction: column; gap: 3px; margin-left: 4px; }
+.signal-hud[hidden] { display: none; }
+.signal-hud small { font-size: 6px; letter-spacing: .2em; color: #9fb6bb; }
+.signal-hud span { display: flex; align-items: flex-end; gap: 2px; height: 16px; }
+.signal-hud i { width: 4px; background: #2a3e45; }
+.signal-hud i:nth-child(1) { height: 4px; } .signal-hud i:nth-child(2) { height: 5.5px; }
+.signal-hud i:nth-child(3) { height: 7px; } .signal-hud i:nth-child(4) { height: 8.5px; }
+.signal-hud i:nth-child(5) { height: 10px; } .signal-hud i:nth-child(6) { height: 11.5px; }
+.signal-hud i:nth-child(7) { height: 13px; } .signal-hud i:nth-child(8) { height: 14.5px; }
+.signal-hud i.on { background: #d9a876; }
+.signal-hud.locked i.on { background: #79e0b0; }
+/* The note a puzzle needs, quoted inside it, and the dampers' live needle. */
+#puzzleNote { margin: 10px 0 4px; padding: 8px 12px; border-left: 2px solid #d9a876; background: #0b1a21; font-size: 10px; line-height: 1.6; color: #d6e1df; }
+#puzzleNote[hidden], #puzzleGauge[hidden] { display: none; }
+#puzzleNote small { display: block; font-size: 7px; letter-spacing: .18em; color: #d9a876; margin-bottom: 3px; }
+#puzzleGauge { position: relative; height: 34px; margin: 12px 0 4px; border-bottom: 1px solid #78938d70;
+  background: linear-gradient(90deg, #e2734a33, transparent 30%, #79e0b044 50%, transparent 70%, #e2734a33); }
+#puzzleGauge::after { content: ''; position: absolute; left: 50%; bottom: 0; width: 1px; height: 100%; background: #79e0b0aa; }
+#puzzleGaugeNeedle { position: absolute; bottom: 0; width: 3px; height: 30px; margin-left: -1.5px; background: #d9a876; transition: left .35s cubic-bezier(.3, 1.6, .5, 1); }
+#puzzleGauge.zero #puzzleGaugeNeedle { background: #79e0b0; }
+#puzzleGauge b { position: absolute; right: 0; top: -2px; font-size: 11px; font-weight: 500; color: #e3bd9a; }
+.dial-column { display: grid; grid-template-rows: auto auto auto; justify-items: center; gap: 4px; flex: 1 1 0; min-width: 64px; }
+.dial-column button { width: 100%; min-height: 40px; border: 1px solid #78938d70; background: #0f242d; color: #d9a876; font-size: 14px; cursor: pointer; }
+.dial-column button:hover, .dial-column button:focus-visible { background: #294147; outline: 2px solid #f0c29b; outline-offset: 1px; }
+.dial-column strong { display: block; width: 100%; padding: 10px 2px; text-align: center; border: 1px solid #c39d7955; color: #e7d3b8; font-size: 14px; font-weight: 500; letter-spacing: .06em; }
+.sequence:has(.dial-column) { flex-wrap: nowrap; gap: 8px; }

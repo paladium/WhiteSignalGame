@@ -149,9 +149,60 @@ test('solid props block movement and leave beacons and patrols walkable', () => 
     ['outside', -8.7, 12.25], ['outside', -8.5, 2.65], ['outside', -13, -3], ['outside', 15.6, -3.3],
     ['outside', -21, -4], ['outside', -22, 10], ['crevasse', -22, -15], ['borehole', -1.5, -4],
   ];
+  // The collapse respawn beside the trench heater must be open ground.
+  assert.ok(canStandAt(5.5, -3.3, walkAreas.crevasse));
   for (const [area, x, z] of solid) assert.equal(canStandAt(x, z, walkAreas[area]), false, `${area} ${x},${z}`);
   for (const area of fieldAreas) {
     for (const heater of heaters[area]) assert.ok(canStandAt(heater.x, heater.z, walkAreas[area]), `${area} heater ${heater.x},${heater.z}`);
     assert.ok(canStandAt(expedition[area].spawn.x, expedition[area].spawn.z, walkAreas[area]), `${area} spawn`);
+  }
+});
+
+test('every quoted puzzle note points at a real line the player has already read', () => {
+  for (const spot of hotspots.filter(item => item.puzzle?.note)) {
+    const note = spot.puzzle!.note!;
+    const source = hotspots.find(item => item.id === note.spot);
+    assert.ok(source?.lines?.[note.line], `${spot.id} → ${note.spot}[${note.line}]`);
+    // The note's milestone must be a direct or indirect prerequisite, so the quote never spoils an unread note.
+    const prerequisites = new Set<string>();
+    const areas = new Set<string>();
+    // Reaching an area needs what its entrances need, so walk portals as well as requirements.
+    const enter = (area: string) => {
+      if (areas.has(area)) return;
+      areas.add(area);
+      for (const portal of hotspots.filter(item => item.destination?.area === area && item.area !== area)) {
+        visit(portal.requires);
+        if (portal.area !== 'outside') enter(portal.area);
+      }
+    };
+    const visit = (flags: readonly string[] = []) => {
+      for (const flag of flags) {
+        if (prerequisites.has(flag)) continue;
+        prerequisites.add(flag);
+        const step = hotspots.find(item => item.proof === flag);
+        visit(step?.requires);
+        if (step) enter(step.area);
+      }
+    };
+    visit(spot.requires);
+    enter(spot.area);
+    assert.ok(!source!.proof || prerequisites.has(source!.proof), `${spot.id} requires ${source!.proof}`);
+  }
+});
+
+test('saved routes for New Game+ echoes load and junk is dropped', () => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: { getItem: () => JSON.stringify({ level: 'outside', x: -5, z: 5, cycle: 1,
+      pastEchoes: { quarters: [1, 2, 3, 4], nowhere: [1, 2], ridge: [1, 'x'] }, echoes: { outside: [0, 0] } }) },
+  });
+  try {
+    const save = loadSave();
+    assert.deepEqual(save.pastEchoes, { quarters: [1, 2, 3, 4] });
+    assert.deepEqual(save.echoes, { outside: [0, 0] });
+  } finally {
+    if (previousStorage) Object.defineProperty(globalThis, 'localStorage', previousStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
   }
 });

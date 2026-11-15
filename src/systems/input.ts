@@ -17,6 +17,8 @@ export class Input {
   private padPrevious = new Set<number>();
   private stickDirection = '';
   private stick = { x: 0, y: 0 };
+  /** Set by the touch joystick every frame. */
+  touchStick = { x: 0, y: 0 };
   bindings: Record<Action, string> = { ...defaultKeys };
   /** Receives gamepad presses for menus, puzzles and pause. */
   onPad?: (command: PadCommand) => void;
@@ -63,11 +65,11 @@ export class Input {
   }
 
   get right() {
-    return Math.max(-1, Math.min(1, Number(this.held('right')) - Number(this.held('left')) + this.stick.x));
+    return Math.max(-1, Math.min(1, Number(this.held('right')) - Number(this.held('left')) + this.stick.x + this.touchStick.x));
   }
 
   get down() {
-    return Math.max(-1, Math.min(1, Number(this.held('down')) - Number(this.held('up')) + this.stick.y));
+    return Math.max(-1, Math.min(1, Number(this.held('down')) - Number(this.held('up')) + this.stick.y + this.touchStick.y));
   }
 
   /** Polls the first connected gamepad. Call once per rendered frame. */

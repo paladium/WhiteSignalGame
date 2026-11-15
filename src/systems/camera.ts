@@ -11,6 +11,13 @@ export class FollowCamera {
   readonly camera = new THREE.OrthographicCamera(-16, 16, 9, -9, 0.1, 180);
   private readonly focus = new THREE.Vector3();
   private aspect = 1;
+  private shakeTime = 0;
+  private shakeAmount = 0;
+
+  shake(amount = .6, seconds = .5) {
+    this.shakeAmount = Math.max(amount, this.shakeTime > 0 ? this.shakeAmount : 0);
+    this.shakeTime = Math.max(this.shakeTime, seconds);
+  }
 
   resize(width: number, height: number) {
     this.aspect = width / Math.max(1, height);
@@ -43,7 +50,12 @@ export class FollowCamera {
       camera.bottom = -halfHeight;
       camera.updateProjectionMatrix();
     }
-    camera.position.set(this.focus.x + cameraOffset, this.focus.y + cameraElevation, this.focus.z + cameraOffset);
-    camera.lookAt(this.focus);
+    // Shake decays quickly; it marks impacts and scares without moving the framing.
+    this.shakeTime = Math.max(0, this.shakeTime - dt);
+    const jolt = this.shakeTime > 0 ? this.shakeAmount * (this.shakeTime / .5) : 0;
+    const jx = jolt ? (Math.random() - .5) * jolt : 0;
+    const jy = jolt ? (Math.random() - .5) * jolt : 0;
+    camera.position.set(this.focus.x + cameraOffset + jx, this.focus.y + cameraElevation + jy, this.focus.z + cameraOffset - jx);
+    camera.lookAt(this.focus.x + jx, this.focus.y + jy, this.focus.z - jx);
   }
 }

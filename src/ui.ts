@@ -16,10 +16,10 @@ export function createUI() {
     <div class="field-meter"><label for="attention" data-i18n="EXPOSURE">EXPOSURE</label><meter id="attention" min="0" max="100" high="55" optimum="0" value="0"></meter><span id="attentionValue">QUIET</span></div>
     <div class="field-meter"><label for="battery" data-i18n="BATTERY">BATTERY</label><meter id="battery" min="0" max="100" low="20" optimum="100" value="100"></meter><span id="batteryValue">100%</span></div>
    </div><div class="equipment"><span id="flashState">◉ FLASHLIGHT ON</span><span id="evidenceCount">EVIDENCE 0/8</span></div></div></div>
-  <div class="objective"><span class="objective-mark">◇</span><div><div class="eyebrow" data-i18n="CURRENT OBJECTIVE">CURRENT OBJECTIVE</div><p id="objectiveText">Reach the research station</p><small id="objectiveRoute"></small><small id="objectiveDistance"></small></div><span class="objective-arrow" id="objectiveArrow" aria-hidden="true">→</span></div><div class="save-state"><span id="saveDot">◇</span><div><span data-i18n="LOCAL CHECKPOINT">LOCAL CHECKPOINT</span><small id="saveLabel">PROGRESS SAVED AUTOMATICALLY</small></div></div></footer>
+  <div class="objective"><span class="objective-mark">◇</span><div><div class="eyebrow" data-i18n="CURRENT OBJECTIVE">CURRENT OBJECTIVE</div><p id="objectiveText">Reach the research station</p><small id="objectiveRoute"></small><small id="objectiveDistance"></small></div><span class="objective-arrow" id="objectiveArrow" aria-hidden="true">→</span><span class="signal-hud" id="signalHud" hidden><small data-i18n="SIGNAL">SIGNAL</small><span><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></span></div><div class="save-state"><span id="saveDot">◇</span><div><span data-i18n="LOCAL CHECKPOINT">LOCAL CHECKPOINT</span><small id="saveLabel">PROGRESS SAVED AUTOMATICALLY</small></div></div></footer>
   <div class="desktop-controls"><span><kbd data-key="up">W</kbd><kbd data-key="left">A</kbd><kbd data-key="down">S</kbd><kbd data-key="right">D</kbd> <span data-i18n="MOVE">MOVE</span></span><span><kbd data-key="run">SHIFT</kbd> <span data-i18n="RUN">RUN</span></span><span><kbd data-key="jump">SPACE</kbd> <span data-i18n="JUMP">JUMP</span></span><span><kbd data-key="flashlight">F</kbd> <span data-i18n="FLASHLIGHT">FLASHLIGHT</span></span><span><kbd data-key="interact">E</kbd> <span data-i18n="INTERACT">INTERACT</span></span></div>
   <div class="slice-label"><span id="elapsed">00:00</span> <span data-i18n="ACTIVE TIME">ACTIVE TIME</span></div>
-  <div class="touch-controls"><div class="touch-move" role="group" aria-label="Movement">
+  <div id="stickZone" aria-hidden="true"><div id="stickBase"><div id="stickKnob"></div></div><span id="stickHint" data-i18n="Drag to move">Drag to move</span></div><div class="touch-controls"><div class="touch-move" role="group" aria-label="Movement">
     <button class="move-up" data-control="up" aria-label="Move up">↑</button>
     <button class="move-left" data-control="left" aria-label="Move left">←</button>
     <button class="move-down" data-control="down" aria-label="Move down">↓</button>
@@ -30,7 +30,7 @@ export function createUI() {
   <div id="puzzle" class="overlay" hidden>
    <section class="panel encounter" role="dialog" aria-modal="true" aria-labelledby="encounterTitle">
     <div class="eyebrow" id="encounterTag" data-i18n="KESTREL / FIELD SYSTEMS">KESTREL / FIELD SYSTEMS</div>
-    <h2 id="encounterTitle"></h2><p id="encounterHint"></p>
+    <h2 id="encounterTitle"></h2><p id="encounterHint"></p><blockquote id="puzzleNote" hidden><small id="puzzleNoteSpeaker"></small><span id="puzzleNoteText"></span></blockquote><div id="puzzleGauge" hidden><span id="puzzleGaugeNeedle"></span><b>0</b></div>
     <div class="sequence" id="sequence"></div>
     <p id="puzzleFeedback" role="status"></p>
     <div class="encounter-choices" id="choices"></div>

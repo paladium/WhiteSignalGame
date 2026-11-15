@@ -12,8 +12,10 @@ window.whiteSignalCheck = async (ending = 'seal', coda = '1') => {
     document.body.dispatchEvent(new KeyboardEvent('keydown', { code, key: k, bubbles: true })); ws.tick(1);
     document.body.dispatchEvent(new KeyboardEvent('keyup', { code, key: k, bubbles: true })); ws.tick(1);
   };
-  const answers = { locker: '241', power: '1432', west: '24', center: '24', east: '35', receiver: '3', echo: '231',
-    dampers: '242', chamber: '141', reverse: '321', boathouse: '232', mast: '312', caller: '2' };
+  const answers = { power: '1432', west: '24', center: '24', east: '35', receiver: '3', echo: '231',
+    dampers: '242', voices: '2', reverse: '321', mast: '312', caller: '2' };
+  // Dial puzzles: how many ▲ turns each dial needs (BRAVO DELTA ALPHA, depth 090, tide 5 8 5).
+  const dials = { locker: [1, 3, 0], chamber: [0, 9, 0], boathouse: [1, 2, 1] };
   ws.close();
   Object.assign(S, { progress: [], evidence: [], ending: undefined, elapsed: 0, splits: { '01': 0 }, cycle: 0 });
   ws.go('outside', -5, 5);
@@ -28,6 +30,12 @@ window.whiteSignalCheck = async (ending = 'seal', coda = '1') => {
     key('KeyE', 'e');
     const dial = document.querySelector('#sequence .dial');
     if (dial) { dial.value = '87.6'; dial.dispatchEvent(new Event('input')); key('Digit1', '1'); }
+    if (dials[target.id]) {
+      document.querySelectorAll('#sequence .dial-column').forEach((column, i) => {
+        for (let n = 0; n < dials[target.id][i]; n++) column.querySelector('button').click();
+      });
+      key('Digit1', '1');
+    }
     for (const digit of answers[target.id] ?? '') key(`Digit${digit}`, digit);
     if (target.finale) key(ending === 'seal' ? 'Digit1' : 'Digit2', ending === 'seal' ? '1' : '2');
     if (!$('puzzle').hidden) throw new Error(`${target.id}: ${$('puzzleFeedback').textContent}`);

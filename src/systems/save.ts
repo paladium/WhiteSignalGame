@@ -15,14 +15,28 @@ export interface Save extends GroundPoint {
   splits: Record<string, number>;
   /** 0 for the first expedition; New Game+ increments it. */
   cycle: number;
+  /** This cycle's route per area, as flat x, z pairs sampled every half second. */
+  echoes: Record<string, number[]>;
+  /** The previous cycle's routes, replayed by Voss's echo on New Game+. */
+  pastEchoes: Record<string, number[]>;
 }
 
 const KEY = 'the-white-signal:v1';
 const areas: readonly Area[] = ['outside', 'inside', ...expeditionAreas];
 
 export const freshSave = (): Save => ({
-  level: 'outside', ...station.spawn, flashlight: true, progress: [], evidence: [], elapsed: 0, splits: { '01': 0 }, cycle: 0,
+  level: 'outside', ...station.spawn, flashlight: true, progress: [], evidence: [], elapsed: 0, splits: { '01': 0 }, cycle: 0, echoes: {}, pastEchoes: {},
 });
+
+export const ECHO_LIMIT = 480;
+
+/** Keeps only well-formed routes for known areas. */
+function routes(value: unknown): Record<string, number[]> {
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([area, points]) =>
+    areas.includes(area as Area) && Array.isArray(points) && points.length <= ECHO_LIMIT * 2 &&
+    points.every(Number.isFinite))) as Record<string, number[]>;
+}
 
 export function loadSave(): Save {
   try {
@@ -47,6 +61,8 @@ export function loadSave(): Save {
       splits: Object.fromEntries(Object.entries(saved.splits ?? {}).filter(([chapter, time]) =>
         /^\d\d$/.test(chapter) && Number.isFinite(time))) as Record<string, number>,
       cycle: Number.isInteger(saved.cycle) && saved.cycle > 0 ? saved.cycle : 0,
+      echoes: routes(saved.echoes),
+      pastEchoes: routes(saved.pastEchoes),
       coda: progress.includes('caller') && ['silence', 'listen', 'witness'].includes(saved.coda) ? saved.coda : undefined,
     };
   } catch {

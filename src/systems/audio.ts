@@ -234,6 +234,41 @@ export class AudioSystem {
 
   beep(frequency = 660) { this.tone(frequency, .18, .24); }
 
+  /** A low, dissonant swell for scripted scares. */
+  stinger() {
+    const ctx = this.context;
+    if (!ctx || !this.master || this.muted) return;
+    const t = ctx.currentTime;
+    for (const frequency of [55, 58.3, 82.4]) {
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      oscillator.type = 'sawtooth';
+      oscillator.frequency.value = frequency;
+      oscillator.frequency.linearRampToValueAtTime(frequency * .94, t + 1.8);
+      gain.gain.setValueAtTime(.0001, t);
+      gain.gain.exponentialRampToValueAtTime(.12, t + .35);
+      gain.gain.exponentialRampToValueAtTime(.0001, t + 1.9);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 400;
+      oscillator.connect(filter).connect(gain).connect(this.master);
+      oscillator.start(t);
+      oscillator.stop(t + 2);
+    }
+  }
+
+  private compassTimer = 0;
+  /** Radio finder blips: faster and higher as the signal strengthens. Null silences them. */
+  compass(strength: number | null, dt: number) {
+    if (strength === null) { this.compassTimer = 0; return; }
+    this.compassTimer += dt;
+    const interval = 1.5 - strength * 1.25;
+    if (this.compassTimer >= interval) {
+      this.compassTimer = 0;
+      this.tone(420 + strength * 520, .05, .035 + strength * .06);
+    }
+  }
+
   private tone(frequency: number, length: number, volume: number) {
     if (!this.context || !this.master || this.muted) return;
     const ctx = this.context;

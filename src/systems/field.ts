@@ -17,6 +17,8 @@ const tuning: Record<Difficulty, { cold: number; hearing: number; pace: number; 
 
 // Storms arrive on a fixed rhythm so they can be learned: 46 calm seconds, then 14 of whiteout wind.
 export const stormCycle = { period: 60, start: 46 };
+// The coast tide runs on its own clock: 26 seconds of low water, then 18 of high.
+export const tideCycle = { period: 44, high: 26 };
 const PRINT_SPACING = .85;
 const PRINT_LIFE = 26;
 const STORM_PRINT_LIFE = 7;
@@ -36,6 +38,8 @@ export class FieldConditions {
   tracking = false;
   /** True once the figure has hunted the player in this area. */
   tracked = false;
+  /** True while the figure mirrors a motionless player by standing still too. */
+  mimicking = false;
   figure?: GroundPoint;
   prints: Print[] = [];
   difficulty: Difficulty = 'normal';
@@ -44,11 +48,15 @@ export class FieldConditions {
   private trail?: GroundPoint;
   private clock = 0;
   private lastPrint?: GroundPoint;
+  private forced = 0;
+
+  /** Brings in a full storm right now for a scripted moment. */
+  forceStorm(seconds: number) { this.forced = Math.max(this.forced, seconds); }
 
   reset(area: Area) {
     const exposed = isFieldArea(area);
     this.warm = 100;
-    this.alert = this.ice = this.storm = 0;
+    this.alert = this.ice = this.storm = this.forced = 0;
     this.shelter = this.tracking = this.tracked = false;
     this.trail = this.lastPrint = undefined;
     this.prints = [];
@@ -57,6 +65,11 @@ export class FieldConditions {
     this.figure = exposed ? { ...patrols[area][0] } : undefined;
     this.checkpoint = exposed ? expedition[area].spawn : undefined;
   }
+
+  /** True while the tide is in. Sea ice only gives way at high water. */
+  static highTideAt(time: number) { return time % tideCycle.period >= tideCycle.high; }
+
+  get highTide() { return FieldConditions.highTideAt(this.clock); }
 
   /** Storm strength from 0 to 1 for a given time in the area. */
   static stormAt(time: number) {
@@ -70,7 +83,9 @@ export class FieldConditions {
     if (!isFieldArea(area) || !this.figure) return;
     const tune = tuning[this.difficulty];
     this.clock += dt;
-    this.storm = FieldConditions.stormAt(this.clock) * (this.difficulty === 'story' ? .6 : 1);
+    this.forced = Math.max(0, this.forced - dt);
+    const forced = this.forced > 0 ? Math.min(1, this.forced / 2) : 0;
+    this.storm = Math.max(FieldConditions.stormAt(this.clock), forced) * (this.difficulty === 'story' ? .6 : 1);
     const heater = heaters[area].find(point => distance(body, point) <= 2.6);
     this.shelter = Boolean(heater);
     if (heater) this.checkpoint = heater;
@@ -78,7 +93,7 @@ export class FieldConditions {
     this.warm = Math.min(100, Math.max(0, this.warm + dt * (heater ? 26 : -exposure)));
     this.battery = Math.min(100, Math.max(0, this.battery + dt * (heater ? 30 : flashlight ? -.45 * tune.battery : 0)));
 
-    const thin = body.grounded && iceSheets[area].some(sheet =>
+    const thin = body.grounded && (area !== 'coast' || this.highTide) && iceSheets[area].some(sheet =>
       Math.abs(body.x - sheet.x) < sheet.width / 2 && Math.abs(body.z - sheet.z) < sheet.depth / 2);
     this.ice = thin ? Math.min(1, this.ice + dt / (.75 * tune.ice)) : 0;
     if (this.ice >= 1) return this.recover('The ice broke. You pulled yourself back to the last heated beacon.');
@@ -110,7 +125,9 @@ export class FieldConditions {
     const target = chasing ? this.trail! : print ?? patrol[this.patrolIndex];
     const gap = distance(target, figure);
     if (gap < .45 && !chasing && !print) this.patrolIndex = (this.patrolIndex + 1) % patrol.length;
-    if (gap > .05) {
+    // It waits when you wait: a still player nearby freezes its patrol.
+    this.mimicking = !chasing && speed < .2 && range < 14;
+    if (gap > .05 && !this.mimicking) {
       const pace = (chasing ? 3.3 : print ? 1.9 : 1.5) * tune.pace;
       const step = Math.min(gap, dt * pace) / gap;
       const x = figure.x + (target.x - figure.x) * step;

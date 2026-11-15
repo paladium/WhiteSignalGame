@@ -2,7 +2,7 @@ export const milestones = [
   'heard', 'manifest', 'footprints', 'locker', 'fuse', 'serviceCard', 'power', 'dispatch',
   'west', 'center', 'east', 'survey', 'triangulated', 'recorder', 'echo', 'override',
   'depth', 'dampers', 'chamber', 'transcript', 'reverse',
-  'coastLog', 'tideBoard', 'feedKey', 'mast', 'caller', 'flags',
+  'coastLog', 'tideBoard', 'feedKey', 'mast', 'caller', 'flags', 'voices',
 ] as const;
 export type Milestone = typeof milestones[number];
 

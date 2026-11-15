@@ -42,9 +42,9 @@ Deploy the `dist/` directory to any static host. No environment variables or bac
 
 The title menu offers Continue, New expedition, New cycle (after the epilogue), Settings and Achievements. Settings cover volume, text size, sound captions, difficulty (story, normal, hard), language (English or Russian) and key bindings.
 
-Touch controls appear on phones, tablets, and narrow screens. Hold the directional pad to move, RUN to sprint, and ⤒ to jump. For puzzles, tap an answer or press its number on the keyboard.
+Touch controls appear on phones, tablets, and narrow screens. Put a thumb anywhere on the left side of the screen to get a floating stick, hold RUN to sprint, and ⤒ to jump. For puzzles, tap an answer or press its number on the keyboard.
 
-Follow the amber marker to the radio room and listen to the transmission. The journey continues through eight connected areas, including the crew quarters, power annex, relay ridge, glacier trench, Borehole Nine, and — after the final choice — Halvard coast station. Field Notes preserves the clues you’ll need for later puzzles.
+Find your way with the radio: the SIGNAL meter and finder blips get stronger as you near the objective and face it (Settings → Navigation switches to the classic amber marker). Start at the radio room and listen to the transmission. The journey continues through eight connected areas, including the crew quarters, power annex, relay ridge, glacier trench, Borehole Nine, and — after the final choice — Halvard coast station. Field Notes preserves the clues you’ll need for later puzzles.
 
 Running and using the flashlight can give away your position around the figures. The flashlight battery drains outdoors and recharges at heated beacons. Storm gusts arrive on a steady rhythm: colder, but the wind masks footsteps and erases tracks. The figures follow fresh footprints. Rewarm and set a recovery point at heated beacons. Sprint and jump across yellow-striped thin ice, or take the longer route around it. Cracking ice, whiteouts, and encounters send you back to the last beacon with your discoveries intact.
 

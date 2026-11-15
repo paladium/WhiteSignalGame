@@ -218,11 +218,11 @@ function decorate(group: THREE.Group, area: ExpeditionArea) {
 
 export class Levels {
  outside=new THREE.Group();inside=new THREE.Group();
- private readonly extra = new Map<ExpeditionArea, THREE.Group>(); snow:THREE.Points; snowPositions:Float32Array; terminalLight:THREE.PointLight;
+ private readonly extra = new Map<ExpeditionArea, THREE.Group>(); private sky: THREE.HemisphereLight; private moon: THREE.DirectionalLight; snow:THREE.Points; snowPositions:Float32Array; terminalLight:THREE.PointLight;
  constructor(public scene:THREE.Scene) {
   scene.add(this.outside,this.inside);this.inside.visible=false;
-  scene.add(new THREE.HemisphereLight('#a8c9de','#17212c',2.3));
-  const moon=new THREE.DirectionalLight('#9cbdd6',2.1);moon.position.set(-12,18,8);scene.add(moon);
+  this.sky=new THREE.HemisphereLight('#a8c9de','#17212c',2.3);scene.add(this.sky);
+  const moon=new THREE.DirectionalLight('#9cbdd6',2.1);moon.position.set(-12,18,8);scene.add(moon);this.moon=moon;
   const o=this.outside;
   iceRidge(o, -20, -18, 20, 9, 10);
   iceRidge(o, -12, -19, 16, 11, 12);
@@ -430,7 +430,30 @@ export class Levels {
   }
   this.snow.geometry.attributes.position.needsUpdate=true;
  }
+ /**
+  * Station blackout: yard lights and windows go dark except the three door lamps,
+  * which stay on as safe pools of light. Level 0 is dark, 1 is normal.
+  */
+ setPower(level: number) {
+  this.sky.intensity = 2.3 * (.42 + .58 * level);
+  this.moon.intensity = 2.1 * (.3 + .7 * level);
+  const keep = [[-16, 2.75], [25, 13.75], [10.2, -1.2]];
+  this.outside.traverse(item => {
+   if (item instanceof THREE.PointLight) {
+    item.userData.base ??= item.intensity;
+    const doorway = keep.some(([x, z]) => Math.abs(item.position.x - x) < 1 && Math.abs(item.position.z - z) < 1.5);
+    item.intensity = item.userData.base * (doorway ? 1 : level);
+   }
+   const material = (item as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+   if (material && 'emissiveIntensity' in material && material.emissiveIntensity > 0 && material.color.getHexString() !== 'ef963d') {
+    material.userData.base ??= material.emissiveIntensity;
+    material.emissiveIntensity = material.userData.base * Math.max(.04, level);
+   }
+  });
+ }
+
  setLevel(area: Area) {
+  if (area !== 'outside') this.setPower(1);
   this.outside.visible = area === 'outside';
   this.inside.visible = area === 'inside';
   for (const key of expeditionAreas) {

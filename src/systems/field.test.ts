@@ -44,13 +44,19 @@ test('a whiteout returns the player to the trail entry when no other heater has 
   assert.deepEqual(outcome?.checkpoint, expedition.ridge.spawn);
 });
 
-test('coast sea ice cracks and the shore figure starts on open ground', () => {
+test('coast sea ice holds at low water and cracks at high tide', () => {
   const field = new FieldConditions();
   field.reset('coast');
   assert.ok(field.figure);
+  // Low water: the ice holds.
+  for (let i = 0; i < 120; i++) assert.equal(field.tick('coast', body(seaIce[0]), 0, false, 1 / 60), undefined);
+  assert.equal(field.ice, 0);
+  // Wait at a heater for high water, then step onto the ice.
+  field.reset('coast');
+  while (!field.highTide) field.tick('coast', body(heaters.coast[0]), 0, false, 1 / 60);
   let failure;
   for (let i = 0; i < 55 && !failure; i++) failure = field.tick('coast', body(seaIce[0]), 0, false, 1 / 60);
-  assert.deepEqual(failure?.checkpoint, expedition.coast.spawn);
+  assert.deepEqual(failure?.checkpoint, heaters.coast[0]);
 });
 
 test('storms follow a fixed rhythm and mask footsteps', () => {
@@ -102,4 +108,14 @@ test('story difficulty never captures the player', () => {
   let outcome;
   for (let i = 0; i < 300 && !outcome; i++) outcome = field.tick('ridge', target, 5.2, true, 1 / 60);
   assert.equal(outcome, undefined);
+});
+
+test('a figure freezes while a nearby player stands still', () => {
+  const field = new FieldConditions();
+  field.reset('ridge');
+  const near = { x: field.figure!.x + 6, z: field.figure!.z };
+  const start = { ...field.figure! };
+  for (let i = 0; i < 120; i++) field.tick('ridge', body(near), 0, false, 1 / 60);
+  assert.ok(field.mimicking);
+  assert.deepEqual(field.figure, start);
 });
